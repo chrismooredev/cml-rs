@@ -19,10 +19,8 @@ tokio-native-tls = "0.3.0"
 ascii = "1.0.0"
 
 # terminal
-termion = "1.5.6"
-termion-input-tokio = "0.3.0"
+crossterm = { version = "0.19.0", features = [ "event-stream" ] }
 smol_str = "0.1.17"
-crossterm = "0.19.0"
 
 # debug displays
 hex = "0.4.2"

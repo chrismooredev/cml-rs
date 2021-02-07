@@ -1,25 +1,26 @@
 #![feature(or_patterns)]
 
 use ascii::{AsciiChar};
-use termion::event::{Event, Key};
+// use termion::event::{Event, Key};
+use crossterm::event::{ KeyCode, KeyEvent, KeyModifiers };
 use smol_str::SmolStr;
 
 pub mod listing;
+
+macro_rules! esc {
+	($s: literal) => {
+		// AsciiChar::ESC + $s
+		SmolStr::new_inline(concat!('\x1B', $s))
+	}
+}
 
 /**
 Maps keyboard key events to a character sequence to send to a terminal.
 
 Returns a nested result - The outer result signifies a if there is a matching code, the inner result contains the actual key codes, depending on if it can be a char or constant string.
 */
-pub fn event_to_code(event: Event) -> Result<SmolStr, String> {
+pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 	//use AsciiChar::*;
-
-	macro_rules! esc {
-		($s: literal) => {
-			// AsciiChar::ESC + $s
-			SmolStr::new_inline(concat!('\x1B', $s))
-		}
-	}
 
 	const ARROW_UP: SmolStr = esc!("[A");
 	const ARROW_DOWN: SmolStr = esc!("[B");
@@ -34,27 +35,67 @@ pub fn event_to_code(event: Event) -> Result<SmolStr, String> {
 	
 
 	let code: Result<char, SmolStr> = match event {
-		Event::Key(key) => match key {
-			Key::Char(ch) => Ok(ch),
+		KeyEvent { code: kc, modifiers: KeyModifiers::NONE } => match kc {
+			// regular (non-ctrl) key codes
+			KeyCode::Char(ch) => Ok(ch),
+
+			KeyCode::Up => Err(ARROW_UP.into()),
+			KeyCode::Down => Err(ARROW_DOWN.into()),
+			KeyCode::Right => Err(ARROW_RIGHT.into()),
+			KeyCode::Left => Err(ARROW_LEFT.into()),
+
+			KeyCode::Tab => Ok('\t'),
+			KeyCode::Enter => Ok('\n'),
+			KeyCode::Home => Ok(AsciiChar::SOH.as_char()),
+			KeyCode::End => Ok(AsciiChar::ENQ.as_char()),
+			KeyCode::Delete => Ok(AsciiChar::EOT.as_char()), // remove char to right of cursor (ctrl+d ?)
+			KeyCode::Esc => Ok(AsciiChar::ESC.as_char()), // ESC - Escape
+			KeyCode::Backspace => Ok(AsciiChar::BackSpace.as_char()),
+
+			// experimental based off https://www.novell.com/documentation/extend5/Docs/help/Composer/books/TelnetAppendixB.html
+			KeyCode::Insert => Err(esc!("[2~")),
+			KeyCode::PageUp => Err(esc!("[5~")),
+			KeyCode::PageDown => Err(esc!("[6~")),
+			KeyCode::BackTab => Err(esc!("OP\x09")),
+			KeyCode::Null => Ok('\0'), // ctrl+spacebar ?
+			KeyCode::F(1) => Err(esc!("OP")),
+			KeyCode::F(2) => Err(esc!("OQ")),
+			KeyCode::F(3) => Err(esc!("OR")),
+			KeyCode::F(4) => Err(esc!("OS")),
+			KeyCode::F(5) => Err(esc!("[15~")),
+			KeyCode::F(n @ 6..=10) => Err(SmolStr::new(format!("[{}~", n+11))),
+			KeyCode::F(n @ 11..=14) => Err(SmolStr::new(format!("[{}~", n+12))),
+			KeyCode::F(n @ 15..=16) => Err(SmolStr::new(format!("[{}~", n+13))),
+			KeyCode::F(n @ 17..=20) => Err(SmolStr::new(format!("[{}~", n+14))),
+			KeyCode::F(n @ _) => Err(format!("invalid function key: 'F{}'", n))?
+			
+			//c @ _ => Err(format!("unexpected non-modified key: '{:?}'", c))?,
+		},
+		KeyEvent { code: kc, modifiers: KeyModifiers::CONTROL } => match kc {
+			// ctrl key codes
 
 			// make these "control-codes" emit as arrow keys instead
-			Key::Ctrl(ch @ ('p' | 'n' | 'f' | 'b')) => Err((match ch {
+			KeyCode::Char(ch @ ('p' | 'n' | 'f' | 'b')) => Err((match ch {
 				'p' => ARROW_UP,
 				'n' => ARROW_DOWN,
 				'f' => ARROW_RIGHT,  // right - responds with <char at new position>
 				'b' => ARROW_LEFT,  // left - responds with <bksp>
 				_ => unreachable!(),
 			}).into()),
-			//Key::Ctrl('m') => Ok('\n'),
-			Key::Ctrl(ch) => match AsciiChar::from_ascii(ch) {
+
+			KeyCode::Left => Err(esc!('b')),
+			KeyCode::Right => Err(esc!('f')),
+
+			// parse known control codes
+			KeyCode::Char(ch) => match AsciiChar::from_ascii(ch) {
 				Err(e) => { Err(format!("Attempt to use non-ascii control character: {} ({:?})", ch, e))? },
 				Ok(ac) => match ascii::caret_decode(ac.to_ascii_uppercase()) {
 					None => { Err(format!("No control-character for ascii character '{}'", ac))? },
 					Some(ctrl_ac) => Ok(ctrl_ac.as_char()),
 					/*
 						references:
+							experimentation
 							https://etherealmind.com/cisco-ios-cli-shortcuts/
-
 					*/
 					/* IOS functions for various keys:
 						^A -> Move cursor to beginning of line
@@ -68,20 +109,20 @@ pub fn event_to_code(event: Event) -> Result<SmolStr, String> {
 						^E -> Move cursor to end of line
 						^F -> Move cursor forward one character
 						ESC F -> Move cursor forward one word
-						^G
-						^H
-						^I
-						^J
+						^G -> ?? bell
+						^H -> ?? backspace key
+						^I -> ?? '\t'
+						^J -> ?? '\n'
 						^K -> Delete line from cursor to end
 						^L -> Reprint line
 						ESC L -> Make letter lowercase
-						^M
+						^M -> ?? '\n'
 						^N, Down -> Next Command
-						^O
+						^O -> ?? '\x0F' ??
 						^P, Up -> Previous Command
-						^Q
+						^Q -> ?? bell
 						^R -> Refresh Line (Start new line, with same command)
-						^S
+						^S -> ?? bell
 						^T -> Swap current and previous characters
 						^U -> Delete whole line
 						ESC U -> Make rest of word uppercase
@@ -96,71 +137,25 @@ pub fn event_to_code(event: Event) -> Result<SmolStr, String> {
 					*/
 				}
 			},
-			/*Key::Ctrl(ch) => Ok(match ch {
-				// replace with ascii::caret_decode ?
 
-				'a' => AsciiChar::SOH, // Start of Heading (move cursor to beginning of line)
-				'b' => AsciiChar::SOX, // STX - Start of Text (move cursor backward)
-				'c' => AsciiChar::ETX, // End of Text
-				'd' => AsciiChar::EOT, // End of Transmission
-				'e' => AsciiChar::ENQ, // ENQ - Enquiry (move cursor to end of line)
-				'k' => AsciiChar::VT, //"\x0B",  // (Delete line from cursor to end)
-				'l' => AsciiChar::FF, // "\x0C",  // FF - Form Feed (Reprint the line)
-				'u' => AsciiChar::NAK, // "\x15",  // NAK - Neg Ack (Delete line from cursor to beginning)
-				'z' => AsciiChar::SUB, // "\x1A",  // SUB - Substitute
-
-				// https://www.cisco.com/c/en/us/td/docs/wireless/controller/7-0/command/reference/cli70bk/cli70over.pdf
-				
-				'm' => AsciiChar::LineFeed, //"\n",  // (Enter an 'Enter' or 'Return' character from anywhere in the line)
-				't' => AsciiChar::Tab, //"\t",  // (Expand the cmd/abbreviation)
-				// 'w' => ???, // (Delete word left of cursor) (cannot get sequence from browser)
-
-
-				// https://etherealmind.com/cisco-ios-cli-shortcuts/
-				//'p' => "\x10", // DLE - Data Link Escape (previous command)
-
-				//'n' => // Next command
-				_ => todo!("ahh"),
-			}.as_char()),*/
-			
-			Key::Up => Err(ARROW_UP.into()),
-			Key::Down => Err(ARROW_DOWN.into()),
-			Key::Right => Err(ARROW_RIGHT.into()),
-			Key::Left => Err(ARROW_LEFT.into()),
-			Key::Home => Ok(AsciiChar::SOH.as_char()),
-			Key::End => Ok(AsciiChar::ENQ.as_char()),
-			Key::Delete => Ok(AsciiChar::EOT.as_char()), // remove char to right of cursor (ctrl+d ?)
-			Key::Esc => Ok(AsciiChar::ESC.as_char()), // ESC - Escape
-			Key::Backspace => Ok(AsciiChar::BackSpace.as_char()),
-
-			Key::Alt('6') => {
-				//ctrl+shift+6, x
-				// [AsciiChar::RS, 'x']
-				Err(SmolStr::new("\x1Ex"))
-			},
-
-			// experimental section
-
-			c @ _ => Err(format!("unexpected key: '{:?}'", c))?,
-			// PageUp, PageDown, BackTab, Delete, Insert, F(u8), Alt(char), Null, Esc
+			c @ _ => Err(format!("unexpected ctrl+key: '{:?}'", c))?,
 		},
-		Event::Mouse(mouse_event) => {
-			Err(format!("unknown mouse input event: {:?}", mouse_event))?
+		KeyEvent { code: kc, modifiers: KeyModifiers::ALT } => match kc {
+			// alt key codes
+
+			//ctrl+shift+6, x
+			// [AsciiChar::RS, 'x']
+			KeyCode::Char('6') => Err(SmolStr::new("\x1Ex")),
+
+			c @ _ => Err(format!("unexpected alt+key: '{:?}'", c))?,
 		},
-		Event::Unsupported(v) if matches!(v.as_slice(), b"\x1B[1;5D") => {
-			/* Ctrl+Left Arrow */
-			Err(esc!('b'))
+		KeyEvent { code: kc, modifiers: KeyModifiers::SHIFT } => match kc {
+			// capital letters, etc
+			KeyCode::Char(ch) => Ok(ch),
+
+			c @ _ => Err(format!("unexpected shift key: '{:?}'", c))?,
 		},
-		Event::Unsupported(v) if matches!(v.as_slice(), b"\x1B[1;6D") => {
-			/* Ctrl+Right Arrow */
-			Err(esc!('f'))
-		},
-		Event::Unsupported(v) => {
-			eprintln!("unknown input event, sending as-is (on next tx line)");
-			let s = String::from_utf8_lossy(&v);
-			assert_eq!(s.as_bytes(), &v);
-			Err(SmolStr::new(s))
-		},
+		c @ _ => Err(format!("unhandled key event: '{:?}'", c))?,
 	};
 
 	match code {
