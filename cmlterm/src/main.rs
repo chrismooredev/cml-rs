@@ -73,7 +73,7 @@ impl SubCmdExpose {
 		// open port
 		// open websocket per port - let the CML multiplexer do the multiplexing
 
-		let listen_addr = self.address.unwrap_or([0, 0, 0, 0].into());
+		let listen_addr = self.address.unwrap_or([127, 0, 0, 1].into());
 		let listen_port = self.port.unwrap_or(0);
 
 		let listener = tokio::net::TcpListener::bind((listen_addr, listen_port)).await.unwrap();
