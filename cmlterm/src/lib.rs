@@ -29,7 +29,7 @@ pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 
 	/*
 	special handling:
-		ctrl-arrow keys are mapped to 
+		ctrl-arrow keys are mapped to moving cursor by words at a time
 		ctrl+shift+6 x -> alt+6
 	*/
 	
