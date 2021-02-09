@@ -1,8 +1,8 @@
 
 use std::time::Instant;
 use std::collections::HashMap;
+use log::trace;
 use rt::LabTopology;
-
 
 use cml::rest::CmlUser;
 use cml::rt;
@@ -72,7 +72,7 @@ pub async fn get_node_listing_data(client: &CmlUser, t: Instant) -> CmlResult<Ve
 		.await.into_iter()
 		.collect::<CmlResult<Vec<rt::LabTopology>>>()?;
 
-	eprintln!("[{:?}] organizing data", Instant::now() - t);
+	trace!("[{:?}] organizing data", Instant::now() - t);
 
 	let lab_entries: Vec<ListingEntry> = lab_data.into_iter().zip(lab_topos.into_iter())
 		.map(|(meta, topo)| {
@@ -116,7 +116,7 @@ pub async fn get_node_listing_data(client: &CmlUser, t: Instant) -> CmlResult<Ve
 }
 
 pub fn list_data(mut lab_entries: Vec<ListingEntry>, t: Instant) {
-	eprintln!("[{:?}] listing data", Instant::now() - t);
+	trace!("[{:?}] listing data", Instant::now() - t);
 	lab_entries.sort_by_cached_key(|asd| (asd.state, asd.owner.clone(), asd.title.clone(), asd.id.clone()));
 
 	for lab in lab_entries {

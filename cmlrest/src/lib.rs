@@ -47,7 +47,7 @@ impl SubCmdGet {
 				} else {
 					result.join("\n")
 				};
-				eprintln!("{}", output);
+				println!("{}", output);
 			},
 			SubCmdGet::Lab(LabID { arg }) => {
 				let arg = arg.trim();
@@ -85,7 +85,7 @@ async fn testing(_args: &Args, client: &CmlUser) -> Result<(), RestError> {
 
 	for lab_id in &labs {
 		//println!("Lab ID: {}", lab_id);
-		eprintln!("{:#?}", client.lab(&lab_id).await?.unwrap());
+		println!("{:#?}", client.lab(&lab_id).await?.unwrap());
 	}
 
 	Ok(())

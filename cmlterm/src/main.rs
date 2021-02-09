@@ -4,6 +4,7 @@
 
 use std::time::Instant;
 use std::borrow::Cow;
+use log::{error, warn, info, debug, trace};
 use clap::Clap;
 use tokio::net::TcpStream;
 //use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -89,28 +90,28 @@ fn log_ws_message(t: Instant, msg: &Message, id_str: &str, pings: bool) {
 	match msg {
 		Message::Text(s) => {
 			let as_hex = hex::encode(s.as_bytes());
-			eprintln!("[{:?}] {} : Text : {:?} : {:?}", Instant::now() - t, id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
+			debug!("[{:?}] {} : Text : {:?} : {:?}", Instant::now() - t, id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
 		},
 		Message::Binary(b) => {
 			let as_hex = hex::encode(&b);
 			let s = String::from_utf8_lossy(&b);
-			eprintln!("[{:?}] {} : Binary : {:?} : {:?}", Instant::now() - t, id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
+			debug!("[{:?}] {} : Binary : {:?} : {:?}", Instant::now() - t, id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
 		},
 		Message::Close(cf) => {
-			eprintln!("[{:?}] {} : Close{}", Instant::now() - t, id_str, if let Some(c) = cf { format!(" : {:?}", c) } else { "".into() });
+			debug!("[{:?}] {} : Close{}", Instant::now() - t, id_str, if let Some(c) = cf { format!(" : {:?}", c) } else { "".into() });
 		},
 		Message::Pong(b) => {
 			if pings {
 				let as_hex = hex::encode(&b);
 				let s = String::from_utf8_lossy(&b);
-				eprintln!("[{:?}] {} : Pong : {:?} : {:?}", Instant::now() - t, id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
+				debug!("[{:?}] {} : Pong : {:?} : {:?}", Instant::now() - t, id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
 			}
 		},
 		Message::Ping(b) => {
 			if pings {
 				let as_hex = hex::encode(&b);
 				let s = String::from_utf8_lossy(&b);
-				eprintln!("[{:?}] {} : Ping : {:?} : {:?}", Instant::now() - t, id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
+				debug!("[{:?}] {} : Ping : {:?} : {:?}", Instant::now() - t, id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
 			}
 		}
 	}
@@ -149,19 +150,18 @@ async fn open_terminal(t: Instant, host: &str, uuid: &str) {
 				})
 			})
 			.for_each(|event_res| async move {
-				//eprintln!("[{:?}] (input event) {:?}", Instant::now() - t, &event_res);
-				//eprintln!("{}", _s);
+				//debug!("[{:?}] (input event) {:?}", Instant::now() - t, &event_res);
 				
 				match event_res {
 					Ok(event) => match event {
 						Event::Key(kevent) => match cmlterm::event_to_code(kevent) {
 							//Ok(c) => send(&tx, c.to_string()),
 							Ok(c) => tx.unbounded_send(Message::Text(c.to_string())).unwrap(),
-							Err(e) => eprintln!("[{:?}] unable to convert key code to sendable sequence: {}", Instant::now() - t, e),
+							Err(e) => warn!("[{:?}] unable to convert key code to sendable sequence: {}", Instant::now() - t, e),
 						},
-						c @ _ => eprintln!("[{:?}] unhandled terminal event: {:?}", Instant::now() - t, c),
+						c @ _ => warn!("[{:?}] unhandled terminal event: {:?}", Instant::now() - t, c),
 					},
-					Err(e) => eprintln!("[{:?}] error occured from stdin: {:?}", Instant::now() - t, e)
+					Err(e) => error!("[{:?}] error occured from stdin: {:?}", Instant::now() - t, e)
 				}
 			})
 			.await;
@@ -212,7 +212,7 @@ async fn open_terminal(t: Instant, host: &str, uuid: &str) {
 
 	let (ws_stream, _) = connect_to_console(host, uuid).await.unwrap();
 
-	eprintln!("[{:?}] websocket established", Instant::now() - t);
+	debug!("[{:?}] websocket established", Instant::now() - t);
 
 	// create a channel to pipe stdin through
 	let (server_tx, server_rx) = futures_channel::mpsc::unbounded();
@@ -244,8 +244,9 @@ async fn open_terminal(t: Instant, host: &str, uuid: &str) {
 async fn main() -> CmlResult<()> {
 	use std::time::Instant;
 	let t = Instant::now();
+	env_logger::init();
 
-	eprintln!("[{:?}] parsing args", Instant::now() - t);
+	trace!("[{:?}] parsing args", Instant::now() - t);
 	// can eventually 'execve ssh' ?
 	let args = Args::parse();
 
@@ -253,10 +254,10 @@ async fn main() -> CmlResult<()> {
 	
 	match &args.subc {
 		SubCmd::List => {
-			eprintln!("[{:?}] logging in", Instant::now() - t);
+			trace!("[{:?}] logging in", Instant::now() - t);
 			let client = auth.login().await?;
 			let client: &CmlUser = &client;
-			eprintln!("[{:?}] listing data", Instant::now() - t);
+			trace!("[{:?}] listing data", Instant::now() - t);
 
 			let lab_entries = get_node_listing_data(&client, t).await?;
 			list_data(lab_entries, t);
