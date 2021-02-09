@@ -140,7 +140,7 @@ impl SubCmdList {
 
 		for lab in lab_entries {
 			match lab.nodes {
-				Err(_) => println!("[{}] /{} :: '{}' (no devices available, lab state is {:?})", lab.owner, lab.id, lab.title, lab.state),
+				Err(_) => if self.all { println!("[{}] /{} :: '{}' (no devices available, lab state is {:?})", lab.owner, lab.id, lab.title, lab.state) },
 				Ok(mut nodes) => {
 					
 					// sort booted stuff first, then by label
@@ -148,14 +148,14 @@ impl SubCmdList {
 
 					for node in nodes {
 						match node.lines {
-							Err(_) => println!("[{}] /{}/{} :: '{}'/{} (no lines available, device state is {:?})", lab.owner, lab.id, node.id, lab.title, node.label, node.state),
+							Err(_) => if self.all {
+								println!("[{}] /{}/{} :: '{}'/{} (no lines available, device state is {:?})", lab.owner, lab.id, node.id, lab.title, node.label, node.state)
+							},
 							Ok(lines) => {
-								if lines.len() > 1 && self.all {
-									for (line, line_guid) in lines.iter().enumerate() {
-										println!("[{}] /{}/{}/{} :: '{}'/{}  ({})", lab.owner, lab.id, node.id, line, lab.title, node.label, line_guid);
-									}
-								} else if lines.len() == 1 {
-									let (line, line_guid) = (0, &lines[0]);
+								for (line, line_guid) in lines.iter().enumerate()
+									// if not self.all, only display first
+									.take_while(|(i, _)| if self.all { true } else { *i == 0 })
+								{
 									println!("[{}] /{}/{}/{} :: '{}'/{}  ({})", lab.owner, lab.id, node.id, line, lab.title, node.label, line_guid);
 								}
 							}
