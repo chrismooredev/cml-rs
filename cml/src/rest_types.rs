@@ -127,7 +127,8 @@ pub mod key {
 	pub struct Console {
 		pub lab_id: String,
 		pub node_id: String,
-		pub label: String,
+		#[serde(rename = "label")]
+		pub node_label: String,
 		pub line: u64,
 	}
 
@@ -135,8 +136,12 @@ pub mod key {
 	pub struct VNC {
 		pub lab_id: String,
 		pub node_id: String,
-		pub label: String,
+		#[serde(rename = "label")]
+		pub node_label: String,
 	}
+
+	// for consistency's sake
+	pub type Link = String;
 }
 
 pub mod labeled {

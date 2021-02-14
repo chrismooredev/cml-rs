@@ -186,6 +186,8 @@ dependencies = [
  "futures-util",
  "hex",
  "log",
+ "serde",
+ "serde_json",
  "smol_str",
  "tokio",
  "tokio-native-tls",

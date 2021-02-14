@@ -1,5 +1,6 @@
 #![feature(or_patterns)]
 #![feature(async_closure)]
+#![feature(option_expect_none)]
 
 use std::{cell::Cell, time::Instant};
 use std::borrow::Cow;

@@ -30,8 +30,6 @@ use cmlterm::expose::SubCmdExpose;
 #[derive(Clap)]
 #[clap(version = "0.1.0", author = "Chris M. <35407569+csm123199@users.noreply.github.com>")]
 struct Args {
-	//#[clap(long)]
-	//vnc: bool,
 
 	#[clap(subcommand)]
 	subc: SubCmd,
@@ -41,8 +39,8 @@ struct Args {
 enum SubCmd {
 	List(SubCmdList),
 	Open(SubCmdOpen),
-	Run(SubCmdRun),
 	Expose(SubCmdExpose),
+	Run(SubCmdRun),
 }
 
 #[derive(Clap)]
@@ -124,18 +122,18 @@ async fn main() -> CmlResult<()> {
 
 	// opens an interactive terminal session with the specified device
  	cmlterm [--vnc] open <UUID>
-	cmlterm [--vnc] open <LAB_NAME> <DEVICE_NAME> [LINE_NUMBER = 0]
-	cmlterm [--vnc] open <LAB_ID> <DEVICE_ID> [LINE_NUMBER = 0]
+	cmlterm [--vnc] open /<LAB_NAME>/<DEVICE_NAME>[/LINE_NUMBER = 0]
+	cmlterm [--vnc] open /<LAB_ID>/<DEVICE_ID>[/LINE_NUMBER = 0]
 
 	// opens a port for other applications to connect to interact the the device like telnet
-	cmlterm [--vnc] pipe <UUID>
-	cmlterm [--vnc] pipe <LAB_NAME> <DEVICE_NAME> [LINE_NUMBER = 0] // prints {"host": "localhost", "port": XXXXX}
-	cmlterm [--vnc] pipe <LAB_ID> <DEVICE_ID> [LINE_NUMBER = 0] // prints {"host": "localhost", "port": XXXXX}
+	cmlterm [--vnc] expose [--json] <UUID>
+	cmlterm [--vnc] expose [--json] /<LAB_NAME>/<DEVICE_NAME>[/LINE_NUMBER = 0] // prints {"host": "localhost", "port": XXXXX}
+	cmlterm [--vnc] expose [--json] /<LAB_ID>/<DEVICE_ID>[/LINE_NUMBER = 0] // prints {"host": "localhost", "port": XXXXX}
 
 	// runs a sequence of commands from arguments, or stdin, to run on the device
 	cmlterm run <UUID>
-	cmlterm run <LAB_NAME> <DEVICE_NAME> [COMMAND, ...] (or over stdin)
-	cmlterm run <LAB_ID> <DEVICE_ID> [COMMAND, ...] (or over stdin)
+	cmlterm run /<LAB_NAME>/<DEVICE_NAME>[/LINE_NUMBER = 0] [COMMAND, ...] (or over stdin)
+	cmlterm run /<LAB_ID>/<DEVICE_ID>[/LINE_NUMBER = 0] [COMMAND, ...] (or over stdin)
 */
 
 
