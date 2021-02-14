@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # source __shell_completion_wrapper.sh
-# declare -f _cmlrest_shell_comp cmlrest
+# declare -F _cmlterm_shell_comp cmlterm
 
 # COMP_CWORD - shell funcs
 # COMP_LINE
@@ -15,7 +15,7 @@
 # supply COMP_WORDS over stdin ('\0' seperated)
 # read COMPREPLY from stdout ('\0' seperated)
 
-function _cmlrest_shell_comp() {
+function __cmlterm_shell_comp() {
 	exe="$1"
 	word="$2"
 	prev_word="$3"
@@ -34,9 +34,8 @@ function _cmlrest_shell_comp() {
 		for i in "${COMP_WORDS[@]}" ; do
 			echo -n "$i"
 			echo -ne '\0'
-		done | ../target/debug/__cmlrest_shell_completion --wordbreaks "$COMP_WORDBREAKS" --exe "$exe" --word "$word" --prev-word "$3"
+		done | ./target/debug/__cmlterm_shell_completion --wordbreaks "$COMP_WORDBREAKS" --exe "$exe" --word "$word" --prev-word "$3" 2>debug.txt
 	)
-
 }
 
-
+complete -o nospace -F __cmlterm_shell_comp cmlterm

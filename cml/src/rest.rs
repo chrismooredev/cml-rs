@@ -1,21 +1,26 @@
 
 use std::collections::HashMap;
 use reqwest::{Client, Response, header::HeaderMap};
-use rt::SimpleNode;
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
+use thiserror::Error;
 
-type RResult<T> = Result<T, Error>;
+use rt::SimpleNode;
+type RResult<T> = Result<T, CmlError>;
+pub use CmlError as Error;
 
-#[derive(Debug)]
-pub enum Error {
+#[derive(Error, Debug)]
+pub enum CmlError {
+	#[error("network error")]
 	Network(reqwest::Error),
+	#[error("bad response from CML REST API")]
 	Response(ApiError),
+	#[error("error decoding JSON response")]
 	Serialization(serde_json::Error),
 }
-impl From<reqwest::Error> for Error { fn from(e: reqwest::Error) -> Error { Error::Network(e) } }
-impl From<ApiError> for Error { fn from(e: ApiError) -> Error { Error::Response(e) } }
-impl From<serde_json::Error> for Error { fn from(e: serde_json::Error) -> Error { Error::Serialization(e) } }
+impl From<reqwest::Error> for CmlError { fn from(e: reqwest::Error) -> CmlError { CmlError::Network(e) } }
+impl From<ApiError> for CmlError { fn from(e: ApiError) -> CmlError { CmlError::Response(e) } }
+impl From<serde_json::Error> for CmlError { fn from(e: serde_json::Error) -> CmlError { CmlError::Serialization(e) } }
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -124,7 +129,7 @@ fn get_cml_client(token: Option<&str>) -> RResult<Client> {
 
 	builder
 		.build()
-		.map_err(|e| Error::Network(e))
+		.map_err(|e| CmlError::Network(e))
 }
 /// Meant for 400 errors
 #[derive(Deserialize)]
