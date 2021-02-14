@@ -1,8 +1,7 @@
-
-use std::collections::HashMap;
-use reqwest::{Client, Response, header::HeaderMap};
-use serde::{Serialize, Deserialize};
+use reqwest::{header::HeaderMap, Client, Response};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use thiserror::Error;
 
 use rt::SimpleNode;
@@ -18,9 +17,21 @@ pub enum CmlError {
 	#[error("error decoding JSON response")]
 	Serialization(serde_json::Error),
 }
-impl From<reqwest::Error> for CmlError { fn from(e: reqwest::Error) -> CmlError { CmlError::Network(e) } }
-impl From<ApiError> for CmlError { fn from(e: ApiError) -> CmlError { CmlError::Response(e) } }
-impl From<serde_json::Error> for CmlError { fn from(e: serde_json::Error) -> CmlError { CmlError::Serialization(e) } }
+impl From<reqwest::Error> for CmlError {
+	fn from(e: reqwest::Error) -> CmlError {
+		CmlError::Network(e)
+	}
+}
+impl From<ApiError> for CmlError {
+	fn from(e: ApiError) -> CmlError {
+		CmlError::Response(e)
+	}
+}
+impl From<serde_json::Error> for CmlError {
+	fn from(e: serde_json::Error) -> CmlError {
+		CmlError::Serialization(e)
+	}
+}
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -57,7 +68,7 @@ impl ApiErrorType {
 	}
 }
 
-#[derive(Debug,Clone,PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum RawApiResponse {
 	None,
 	PlainText(String),
@@ -105,20 +116,24 @@ impl RawApiResponse {
 									.map(|v| (status, RawApiResponse::Json(v)))
 								)
 								.map_err(|e| ApiError::new(endpoint, ApiErrorType::JsonDecode(text, e)).into())*/
-						},
-						ct @ _ => Err(ApiError::new(endpoint, ApiErrorType::unknown(format!("unknown content-type: `{}`", ct))))?,
 					}
+                        ct @ _ => Err(ApiError::new(
+                            endpoint,
+                            ApiErrorType::unknown(format!("unknown content-type: `{}`", ct)),
+                        ))?,
 				}
 			}
 		}
 	}
 }
-
+}
 
 fn get_cml_client(token: Option<&str>) -> RResult<Client> {
-	let mut builder = Client::builder()
-		.danger_accept_invalid_certs(true); // many CML instances are self-signed
-	
+	// many CML instances are self-signed
+	let mut builder = Client::builder().danger_accept_invalid_certs(true);
+    let mut builder = Client::builder().danger_accept_invalid_certs(true); 
+	let mut builder = Client::builder().danger_accept_invalid_certs(true);
+
 	if let Some(t) = token {
 		let mut hm = HeaderMap::new();
 		let val = format!("Bearer {}", t);
@@ -127,9 +142,7 @@ fn get_cml_client(token: Option<&str>) -> RResult<Client> {
 		builder = builder.default_headers(hm);
 	}
 
-	builder
-		.build()
-		.map_err(|e| CmlError::Network(e))
+	builder.build().map_err(|e| CmlError::Network(e))
 }
 /// Meant for 400 errors
 #[derive(Deserialize)]
@@ -406,6 +419,3 @@ impl Authenticate {
 		}
 	}
 }
-
-
-

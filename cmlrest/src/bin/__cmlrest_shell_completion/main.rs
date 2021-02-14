@@ -1,9 +1,9 @@
 #![feature(result_flattening)]
 
-use std::io;
-use std::ffi::OsString;
-use std::env::VarError;
 use std::convert::TryFrom;
+use std::env::VarError;
+use std::ffi::OsString;
+use std::io;
 
 #[derive(Debug, Clone)]
 enum CompletionError {
@@ -45,11 +45,11 @@ impl From<VarError> for CompletionError {
 
 #[derive(Debug, Clone, Copy)]
 enum CompletionKey {
-	Normal, // '\t' 9
-	SuccessiveTabs, // '?' 63
+    Normal,                  // '\t' 9
+    SuccessiveTabs,          // '?' 63
 	PartialWordAlternatives, // '!' 33
-	Unmodified, // '@' 64
-	Menu, // '%' 37
+    Unmodified,              // '@' 64
+    Menu,                    // '%' 37
 }
 impl TryFrom<char> for CompletionKey {
 	type Error = CompletionError;
@@ -166,31 +166,31 @@ impl CompletionVars {
 			let args: Vec<String> = std::env::args().collect();
 			let mut found_args = 0;
 			if let Some(wbp) = args.iter().position(|s| s == "--wordbreaks") {
-				if wbp+1 < args.len() {
-					wordbreaks = Some(args[wbp+1].chars().collect());
+                if wbp + 1 < args.len() {
+                    wordbreaks = Some(args[wbp + 1].chars().collect());
 					found_args += 1;
 				}
 			}
 			if let Some(ep) = args.iter().position(|s| s == "--exe") {
-				if ep+1 < args.len() {
-					exe = Some(args[ep+1].clone());
+                if ep + 1 < args.len() {
+                    exe = Some(args[ep + 1].clone());
 					found_args += 1;
 				}
 			}
 			if let Some(wp) = args.iter().position(|s| s == "--word") {
-				if wp+1 < args.len() {
-					word = Some(args[wp+1].clone());
+                if wp + 1 < args.len() {
+                    word = Some(args[wp + 1].clone());
 					found_args += 1;
 				}
 			}
 			if let Some(pwp) = args.iter().position(|s| s == "--prev-word") {
-				if pwp+1 < args.len() {
-					prev_word = Some(args[pwp+1].clone());
+                if pwp + 1 < args.len() {
+                    prev_word = Some(args[pwp + 1].clone());
 					found_args += 1;
 				}
 			}
 			
-			if args.len() != 1 + found_args*2 {
+            if args.len() != 1 + found_args * 2 {
 				eprintln!("shell completer got unexpected arguments.");
 				eprintln!("Usage: <shell completer binary> [OPTIONS...]");
 				eprintln!("\t--wordbreaks <CHAR LIST> \tA single string containing characters the shell uses to seperate words");
@@ -206,11 +206,11 @@ impl CompletionVars {
 			(None, None, None, None)
 		};
 		
-
 		Ok(CompletionVars {
 			line,
 			cursor,
-			key, reqtype,
+            key,
+            reqtype,
 
 			words,
 
@@ -236,7 +236,6 @@ async fn main() -> io::Result<()> {
 				eprintln!("{}: `{}`", n, v);
 			});
 		eprintln!("");
-		
 	}
 
 	let as_struct = CompletionVars::from_bash_env(true, true);
@@ -276,4 +275,3 @@ async fn main() -> io::Result<()> {
 
 	Ok(())
 }
-

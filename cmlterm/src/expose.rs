@@ -1,24 +1,17 @@
-
-use std::{cell::Cell, time::Instant};
-use std::borrow::Cow;
-use log::{error, warn, info, debug, trace};
 use clap::Clap;
-use tokio::net::TcpStream;
-//use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_native_tls::native_tls as native_tls;
-use tokio_native_tls::TlsConnector as TlsConnectorAsync;
-use native_tls::TlsConnector;
 use futures_util::{future, StreamExt};
+use log::{debug, error, info, trace, warn};
+use std::cell::Cell;
+use tokio::net::TcpStream;
 
 use tokio_tungstenite::tungstenite;
-use tokio_tungstenite::WebSocketStream;
 use tungstenite::protocol::Message;
-use tungstenite::error::Error as WsError;
-use tungstenite::handshake::client::Response as WsResponse;
-use tokio_native_tls::TlsStream;
 
 #[derive(Clap)]
 pub struct SubCmdExpose {
+	#[clap(short, long)]
+	vnc: bool,
+
 	uuid: String,
 
 	#[clap(short, long)]
@@ -47,7 +40,7 @@ impl SubCmdExpose {
 
 		info!("done accepting/processing connections");
 	}
-	
+
 	/// Pipes an existing TCP connection to a console device at the specified CML host/device UUID pair
 	///
 	/// Note: if using a terminal, set the following settings for the best experience
@@ -55,7 +48,7 @@ impl SubCmdExpose {
 	/// * Local line editing: false
 	/// * Nagles algorithm: disabled
 	async fn forward_tcp_to_console(mut stream: TcpStream, host: &str, uuid: &str) {
-		use tokio::io::{AsyncWriteExt, AsyncReadExt};
+		use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 		let (ws_stream, _) = crate::connect_to_console(host, uuid).await.unwrap();
 		let peer_addr = stream.peer_addr().unwrap();
@@ -64,7 +57,6 @@ impl SubCmdExpose {
 		// Note that this implementation must be a bit asymmetric
 		// That is because we are exchanging between a frame-based
 		// protocol (WebSockets) and a stream-based protocol (TCP).
-
 
 		// send things immediatly
 		stream.set_nodelay(true).unwrap();
@@ -96,20 +88,21 @@ impl SubCmdExpose {
 				let msg = msg.unwrap();
 				match msg {
 					Message::Text(t) => warn!("unexpected text message from server: {:?}", t),
-					Message::Pong(t) => warn!("unexpected pong message from server: {:?}", String::from_utf8_lossy(&t)),
+                    Message::Pong(t) => warn!(
+                        "unexpected pong message from server: {:?}",
+                        String::from_utf8_lossy(&t)
+                    ),
 					Message::Close(_) => {
 						trace!("WS Server --> {} : {:?}", peer_addr, msg);
-						if ! requested_close.get() {
+                        if !requested_close.get() {
 							// the server has initiated the close - respond back
 							to_ws_from_ws.unbounded_send(Message::Close(None)).unwrap();
 						} else {
 							// we initiated the initial close
 						}
 						break;
-					},
-					Message::Ping(t) => {
-						to_ws_from_ws.unbounded_send(Message::Pong(t)).unwrap()
-					},
+                    }
+                    Message::Ping(t) => to_ws_from_ws.unbounded_send(Message::Pong(t)).unwrap(),
 					Message::Binary(b) => {
 						let s = String::from_utf8_lossy(&b);
 						trace!("WS Server --> {} : {:?}", peer_addr, s);
@@ -123,13 +116,13 @@ impl SubCmdExpose {
 			to_ws_from_ws.disconnect();
 			tcp_write.flush().await.unwrap();
 			tcp_write.shutdown().await.unwrap();
-			
+
 			debug!("WS Server --> {} : Closed", peer_addr);
 		};
 
 		let tcp_to_ws = async {
 			let mut v = vec![0u8; 1024];
-			
+
 			loop {
 				let n = tcp_read.read(&mut v).await.unwrap();
 				if n == 0 {
@@ -143,7 +136,6 @@ impl SubCmdExpose {
 				to_ws_from_tcp.unbounded_send(Message::text(msg)).unwrap();
 			}
 
-			
 			debug!("WS Server <-- {} : Closed", peer_addr);
 			to_ws_from_tcp.disconnect();
 		};
@@ -151,10 +143,16 @@ impl SubCmdExpose {
 		use futures::FutureExt;
 
 		let ws_responder = serv_rx
-			.inspect(|msg| if ! matches!(msg, Message::Pong(_)) { trace!("WS Server <-- {} : {:?}", peer_addr, msg) })
+            .inspect(|msg| {
+                if !matches!(msg, Message::Pong(_)) {
+                    trace!("WS Server <-- {} : {:?}", peer_addr, msg)
+                }
+            })
 			.map(Ok)
 			.forward(ws_write)
-			.then(async move |_| trace!("WS Server <-- {} : WS write connection closed", peer_addr));
+            .then(async move |_| {
+                trace!("WS Server <-- {} : WS write connection closed", peer_addr)
+            });
 
 		futures_util::pin_mut!(serv_to_client, tcp_to_ws, ws_responder);
 		let ((), (), _ws_send_res) = future::join3(serv_to_client, tcp_to_ws, ws_responder).await;
@@ -164,5 +162,3 @@ impl SubCmdExpose {
 		// send TCP -> WS
 	}
 }
-
-

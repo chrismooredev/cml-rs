@@ -1,10 +1,12 @@
 #![feature(result_flattening)]
 #![feature(try_blocks)]
 
-use std::{collections::HashSet, io, path::{Path, PathBuf}};
-use std::ffi::OsString;
-use std::env::VarError;
 use std::convert::TryFrom;
+use std::env::VarError;
+use std::ffi::OsString;
+use std::collections::HashSet;
+use std::io;
+use std::path::{Path, PathBuf};
 use tokio::runtime::Runtime;
 
 use cml::rest::CmlUser;
@@ -51,11 +53,11 @@ impl From<VarError> for CompletionError {
 
 #[derive(Debug, Clone, Copy)]
 enum CompletionKey {
-	Normal, // '\t' 9
-	SuccessiveTabs, // '?' 63
+	Normal,                  // '\t' 9
+	SuccessiveTabs,          // '?' 63
 	PartialWordAlternatives, // '!' 33
-	Unmodified, // '@' 64
-	Menu, // '%' 37
+	Unmodified,              // '@' 64
+	Menu,                    // '%' 37
 }
 impl TryFrom<char> for CompletionKey {
 	type Error = CompletionError;
@@ -131,72 +133,73 @@ impl CompletionVars {
 					tmp_vec.push(b);
 				}
 			}
-	
-			Some(words.into_iter()
-				.map(|vb| String::from_utf8(vb).expect("command line not UTF8"))
-				.collect())
+
+			Some(
+				words
+					.into_iter()
+					.map(|vb| String::from_utf8(vb).expect("command line not UTF8"))
+					.collect(),
+			)
 		} else {
 			None
 		};
 
-
-
 		let (wordbreaks, exe, word, prev_word) = if use_args {
 			/*#[derive(Clap)]
-			struct Args {
-				/// A list of characters used to seperate words
-				#[clap(long)]
-				wordbreaks: Option<String>,
-				
-				/// The executable name for the completion
-				#[clap(long)]
-				exe: Option<String>,
-				
-				/// The current word to complete
-				#[clap(long)]
-				word: Option<String>,
+						struct Args {
+							/// A list of characters used to seperate words
+							#[clap(long)]
+							wordbreaks: Option<String>,
 
-				/// The word before the current word to complete
-				#[clap(long)]
-				prev_word: Option<String>,
-			}
-			
-			let args = Args::parse();
-*/
+							/// The executable name for the completion
+							#[clap(long)]
+							exe: Option<String>,
+
+							/// The current word to complete
+							#[clap(long)]
+							word: Option<String>,
+
+							/// The word before the current word to complete
+							#[clap(long)]
+							prev_word: Option<String>,
+						}
+
+						let args = Args::parse();
+			*/
 
 			let mut wordbreaks: Option<Vec<char>> = None;
 			let mut exe: Option<PathBuf> = None;
 			let mut word: Option<String> = None;
 			let mut prev_word: Option<String> = None;
-			
+
 			let args: Vec<String> = std::env::args().collect();
 			let mut found_args = 0;
 			if let Some(wbp) = args.iter().position(|s| s == "--wordbreaks") {
-				if wbp+1 < args.len() {
-					wordbreaks = Some(args[wbp+1].chars().collect());
+				if wbp + 1 < args.len() {
+					wordbreaks = Some(args[wbp + 1].chars().collect());
 					found_args += 1;
 				}
 			}
 			if let Some(ep) = args.iter().position(|s| s == "--exe") {
-				if ep+1 < args.len() {
-					exe = Some(Path::new(&args[ep+1]).to_path_buf());
+				if ep + 1 < args.len() {
+					exe = Some(Path::new(&args[ep + 1]).to_path_buf());
 					found_args += 1;
 				}
 			}
 			if let Some(wp) = args.iter().position(|s| s == "--word") {
-				if wp+1 < args.len() {
-					word = Some(args[wp+1].clone());
+				if wp + 1 < args.len() {
+					word = Some(args[wp + 1].clone());
 					found_args += 1;
 				}
 			}
 			if let Some(pwp) = args.iter().position(|s| s == "--prev-word") {
-				if pwp+1 < args.len() {
-					prev_word = Some(args[pwp+1].clone());
+				if pwp + 1 < args.len() {
+					prev_word = Some(args[pwp + 1].clone());
 					found_args += 1;
 				}
 			}
-			
-			if args.len() != 1 + found_args*2 {
+
+			if args.len() != 1 + found_args * 2 {
 				eprintln!("shell completer got unexpected arguments.");
 				eprintln!("Usage: <shell completer binary> [OPTIONS...]");
 				eprintln!("\t--wordbreaks <CHAR LIST> \tA single string containing characters the shell uses to seperate words");
@@ -211,12 +214,12 @@ impl CompletionVars {
 		} else {
 			(None, None, None, None)
 		};
-		
 
 		Ok(CompletionVars {
 			line,
 			cursor,
-			key, reqtype,
+			key,
+			reqtype,
 
 			words,
 
@@ -234,11 +237,11 @@ enum QuoteStyle {
 }
 fn bash_escape(s: String, style: QuoteStyle) -> String {
 	match style {
-		QuoteStyle::None => {},
+		QuoteStyle::None => {}
 		QuoteStyle::Single => todo!("single quote arguments"),
 		QuoteStyle::Double => todo!("double quote arguments"),
 	};
-	
+
 	let mut rtn = String::new();
 	for c in s.chars() {
 		if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':') {
@@ -261,12 +264,14 @@ async fn list_labs(client: &CmlUser, all: bool) -> CmlResult<Vec<(String, String
 			Ok(None)
 		}
 	}
-	
+
 	let ids = client.labs(all).await?;
-	let id_futs: Vec<_> = ids.into_iter()
+	let id_futs: Vec<_> = ids
+		.into_iter()
 		.map(|id| lab_name(client, id, all))
 		.collect();
-	let descs: Vec<_> = futures::future::join_all(id_futs).await
+	let descs: Vec<_> = futures::future::join_all(id_futs)
+		.await
 		.into_iter()
 		.filter_map(|r| r.transpose())
 		.collect::<Result<_, _>>()?;
@@ -298,12 +303,15 @@ fn suggest_flag<'a, II: IntoIterator<Item = &'a (&'a str, &'a str)>>(ctx: &Compl
 				// eliminate already existing flags
 				.filter(|(s, l)| !(words.contains(s) || words.contains(l)))
 				.inspect(|desc| eprintln!("flag does not exist: {:?}", desc))
-				.filter(|(_, l)| !cword.starts_with("--") || (cword.starts_with("--") && (cword.len() == 2 || l.starts_with(cword))))
+				.filter(|(_, l)| {
+					!cword.starts_with("--")
+						|| (cword.starts_with("--") && (cword.len() == 2 || l.starts_with(cword)))
+				})
 				.inspect(|desc| eprintln!("flag is compatible: {:?}", desc))
 				.map(|(_, l)| *l)
 				.collect()
-		},
-		Some(_) | None => Vec::new()
+		}
+		Some(_) | None => Vec::new(),
 	}
 }
 fn remove_matching<S: AsRef<str>, F: Fn(&str) -> bool>(v: &mut Vec<S>, f: F) {
@@ -333,7 +341,15 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 		let is_links = words.contains(&"-l") || words.contains(&"--links");
 		eprintln!("(is_vnc, is_links) = {:?}", (is_vnc, is_links));
 
-		let mut c = suggest_flag(&ctx, &[("-a", "--all"), ("-j", "--json"), ("-v", "--vnc"), ("-l", "--links")]);
+		let mut c = suggest_flag(
+			&ctx,
+			&[
+				("-a", "--all"),
+				("-j", "--json"),
+				("-v", "--vnc"),
+				("-l", "--links"),
+			],
+		);
 		eprintln!("suggested flags: {:?}", c);
 
 		// remove VNC/JSON suggestions if the other exists
@@ -367,12 +383,13 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 				// if no lab, only complete up to lab
 				// if lab, complete node
 				// if node, complete line
-				let seperator_ind = cword.chars()
+				let seperator_ind = cword
+					.chars()
 					.enumerate()
 					.skip(1) // skip initial slash
-					.find(|(i, c)| *c == '/' && cword.chars().nth(i-1).unwrap() != '\\')
+					.find(|(i, c)| *c == '/' && cword.chars().nth(i - 1).unwrap() != '\\')
 					.map(|(i, _)| i);
-				
+
 				match seperator_ind {
 					None => {
 						// get labs
@@ -385,33 +402,31 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 						let labs_nodes: Vec<_> = futures::future::join_all(node_futs).await
 							.into_iter()
 							.collect::<CmlResult<_>>()?;*/
-							
 
-
-						
 						// hashset in case there are labs with names the same as IDs
 						let mut ah: HashSet<String> = HashSet::new();
 
-						pairs.into_iter()
-							.for_each(|(id, name)| {
-								ah.insert(id);
-								ah.insert(name);
-							});
+						pairs.into_iter().for_each(|(id, name)| {
+							ah.insert(id);
+							ah.insert(name);
+						});
 
 						// asdasdadsasdasd
 						ah.drain()
-							.map(|mut s| { s.insert(0, '/'); s })
+							.map(|mut s| {
+								s.insert(0, '/');
+								s
+							})
 							.filter(|s| cword.len() == 0 || s.starts_with(cword))
 							.for_each(|s| opts.push(s));
-					},
+					}
 					Some(si) => {
 						// validate current lab name
 						// emit nodes
-
-					},
+					}
 				}
 			}
-			if cword.len() == 0 || ! is_path {
+			if cword.len() == 0 || !is_path {
 				// get UUIDs, put them into opts
 				let keys = client.keys_console(show_all).await.unwrap();
 				keys.into_iter()
@@ -430,8 +445,8 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 
 	// must perform the escaping at generation, cannot blindly escape all
 	/*let completes: Vec<_> = completes.into_iter()
-		.map(|s| bash_escape(s, QuoteStyle::None))
-		.collect();*/
+	.map(|s| bash_escape(s, QuoteStyle::None))
+	.collect();*/
 
 	Ok(completes)
 }
@@ -462,16 +477,16 @@ fn main() -> io::Result<()> {
 		eprintln!("data: {:#?}", as_struct);
 		eprintln!("");
 	}
-	
+
 	let ctx = match as_struct {
 		Ok(c) => c,
 		Err(e) => {
 			eprintln!("error getting completion context: {:?}", e);
 			return Ok(());
-		},
+		}
 	};
 
-	let rt  = Runtime::new().unwrap();
+	let rt = Runtime::new().unwrap();
 	let completes = rt.block_on(doit(ctx)).unwrap();
 
 	if test_env {
@@ -486,4 +501,3 @@ fn main() -> io::Result<()> {
 
 	Ok(())
 }
-

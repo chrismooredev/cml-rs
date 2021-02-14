@@ -1,13 +1,12 @@
-
+use serde::{Deserialize, Serialize};
 use std::fmt;
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum State {
 	/// The device has been booted and is currently running.
 	Booted,
-	/// The device is in the process of starting up.
+	/// The device is in the process of starting up. (is fully running?)
 	Started,
 	/// The device is in a queue to be started up.
 	Queued,
@@ -16,6 +15,14 @@ pub enum State {
 	/// The device is not running, or queued to run.
 	DefinedOnCore,
 	DefinedOnCluster,
+}
+impl State {
+	fn active(&self) -> bool {
+		matches!(self, State::Booted | State::Started | State::Queued)
+	}
+	fn inactive(&self) -> bool {
+		matches!(self, State::DefinedOnCluster | State::DefinedOnCore | State::Stopped)
+	}
 }
 impl fmt::Display for State {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -111,18 +118,18 @@ pub struct LinkDescription {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InterfaceDescription {
 	/// physical, loopback, etc
-	#[serde(rename="type")]
+	#[serde(rename = "type")]
 	pub mode: String,
 	// pub node: String, // shows on example, but not on any topology calls
-	pub label: String,
+	#[serde(rename = "label")]
+	pub int_label: String,
 	pub slot: Option<u64>,
 	pub state: State,
 }
 
-
 pub mod key {
-	use serde::{Serialize, Deserialize};
-	
+	use serde::{Deserialize, Serialize};
+
 	#[derive(Serialize, Deserialize)]
 	pub struct Console {
 		pub lab_id: String,
@@ -145,14 +152,14 @@ pub mod key {
 }
 
 pub mod labeled {
-	use serde::{Serialize, Deserialize};
+	use serde::{Deserialize, Serialize};
 
 	#[derive(Debug, Serialize, Deserialize)]
 	pub struct Data<T> {
 		pub id: String,
 		pub data: T,
 	}
-	
+
 	#[derive(Debug, Serialize, Deserialize)]
 	pub struct Link<T> {
 		pub id: String,
@@ -163,10 +170,10 @@ pub mod labeled {
 
 	#[derive(Debug, Serialize, Deserialize)]
 	pub struct Interface<T> {
-		pub id: String,
-		pub node: String,
+		#[serde(rename = "id")]
+		pub int_id: String,
+		#[serde(rename = "node")]
+		pub node_id: String,
 		pub data: T,
 	}
 }
-
-

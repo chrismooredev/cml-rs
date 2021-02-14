@@ -1,33 +1,22 @@
-use std::{cell::Cell, time::Instant};
-use std::borrow::Cow;
-use log::{error, warn, info, debug, trace};
 use clap::Clap;
+use log::{debug, error, trace, warn};
+use std::borrow::Cow;
 
-use ascii::{AsciiChar};
-// use termion::event::{Event, Key};
-use crossterm::event::{ KeyCode, KeyEvent, KeyModifiers };
-use smol_str::SmolStr;
-use tokio::net::TcpStream;
-//use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_native_tls::native_tls as native_tls;
-use tokio_native_tls::TlsConnector as TlsConnectorAsync;
-use native_tls::TlsConnector;
+use ascii::AsciiChar;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures_util::{future, StreamExt};
+use smol_str::SmolStr;
 
 use tokio_tungstenite::tungstenite;
-use tokio_tungstenite::WebSocketStream;
-use tungstenite::protocol::Message;
 use tungstenite::error::Error as WsError;
-use tungstenite::handshake::client::Response as WsResponse;
-use tokio_native_tls::TlsStream;
-
-type CmlResult<T> = Result<T, cml::rest::Error>;
+use tungstenite::protocol::Message;
 
 #[derive(Clap)]
 pub struct SubCmdOpen {
+	#[clap(short, long)]
+	vnc: bool,
+
 	uuid_or_lab: String,
-	device: Option<String>,
-	line: Option<u8>,
 }
 impl SubCmdOpen {
 	pub async fn run(&self, host: &str) {
@@ -38,14 +27,14 @@ impl SubCmdOpen {
 	async fn open_terminal(&self, host: &str, uuid: &str) {
 		type WsSender = futures_channel::mpsc::UnboundedSender<Message>;
 		//type WsReceiver = futures_channel::mpsc::UnboundedReceiver<Message>;
-	
+
 		async fn handle_terminal_input(tx: WsSender) {
+			use crossterm::event::{Event, EventStream};
 			use crossterm::terminal;
-			use crossterm::event::{ EventStream, Event, KeyEvent, KeyCode, KeyModifiers };
-	
+
 			// Disable line buffering, local echo, etc.
 			terminal::enable_raw_mode().unwrap();
-	
+
 			let tx = &tx;
 			EventStream::new()
 				.take_while(move |event| {
@@ -57,19 +46,19 @@ impl SubCmdOpen {
 						Ok(Event::Key(CTRL_D)) => {
 							// print a newline since echo is disabled
 							println!("\r");
-	
+
 							terminal::disable_raw_mode().unwrap();
-							
+
 							tx.unbounded_send(Message::Close(None)).unwrap();
-	
+
 							false
-						},
+						}
 						_ => true,
 					})
 				})
 				.for_each(|event_res| async move {
 					//debug!("(input event) {:?}", &event_res);
-					
+
 					match event_res {
 						Ok(event) => match event {
 							Event::Key(kevent) => match event_to_code(kevent) {
@@ -79,7 +68,7 @@ impl SubCmdOpen {
 							},
 							c @ _ => warn!("unhandled terminal event: {:?}", c),
 						},
-						Err(e) => error!("error occured from stdin: {:?}", e)
+						Err(e) => error!("error occured from stdin: {:?}", e),
 					}
 				})
 				.await;
@@ -94,11 +83,11 @@ impl SubCmdOpen {
 				}
 				s.trim_end()
 			}
-			
+
 			// hopefully each prompt is < 32 chars
 			//let data = if data.len() > 32 { &data[data.len()-32..] } else { &data };
 			let s = std::str::from_utf8(data).ok()?;
-			
+
 			let s = trim_end(&s); // some devices have spaces/escape codes afterward
 			s.ends_with(|c| c == '#' || c == '>' || c == '$') // IOS+Linux prompts
 				.then(|| s.rfind(|c| c == '\r' || c == '\n')) // devices emit newlines differently
@@ -109,50 +98,46 @@ impl SubCmdOpen {
 		async fn handle_ws_msg(ws_tx: &WsSender, message: Result<Message, WsError>) {
 			use std::io::Write;
 			//eprintln!("Recieved: {:?}", &message);
-			
+
 			let msg = message.unwrap();
 			if let Message::Ping(d) = msg {
 				ws_tx.unbounded_send(Message::Pong(d)).unwrap();
 			} else if let Message::Binary(data) = msg {
 				let out = std::io::stdout();
 				let mut lock = out.lock();
-	
+
 				// set terminal title
 				if let Some(prompt) = parse_terminal_prompt(&data) {
 					//eprintln!("parsed prompt: {:?}", prompt);
-					crossterm::execute!(
-						lock,
-						crossterm::terminal::SetTitle(prompt)
-					).unwrap();
+					crossterm::execute!(lock, crossterm::terminal::SetTitle(prompt)).unwrap();
 				}
-	
+
 				lock.write_all(&data).unwrap();
 				lock.flush().unwrap();
 			} else if let Message::Close(r) = msg {
 				// log to user that server as requested closing the socket?
 				//if let Some(reason) = r {
-					//eprintln!("Server has closed the stream: ({}, {:?})", reason.code, reason.reason);
+				//eprintln!("Server has closed the stream: ({}, {:?})", reason.code, reason.reason);
 				//} else {
-					//eprintln!("Server has closed the stream.");
+				//eprintln!("Server has closed the stream.");
 				//}
-				
-	
+
 				// TODO: close the stream somehow?
 			} else {
 				eprintln!("Unexpected websocket message type: {:?}", msg);
 			}
 		}
-	
+
 		let (ws_stream, _) = crate::connect_to_console(host, uuid).await.unwrap();
-	
+
 		debug!("websocket established");
-	
+
 		// create a channel to pipe stdin through
 		let (server_tx, server_rx) = futures_channel::mpsc::unbounded();
-	
+
 		// stdin is block-on-read only, so spawn a new thread for it
 		tokio::spawn(handle_terminal_input(server_tx.clone()));
-	
+
 		// split websocket into seperate write/read streams
 		let (write, read) = ws_stream.split();
 		let stdin_to_ws = server_rx
@@ -162,16 +147,17 @@ impl SubCmdOpen {
 		let ws_to_stdout = read
 			.inspect(|msg| if let Ok(m) = msg { log_ws_message(m, "recv", false) })
 			.for_each(|msg| handle_ws_msg(&server_tx, msg));
-	
+
 		// will overwrite the console title based on received messages
 		set_terminal_title("CML Console").unwrap();
-	
+
 		// reprint the current line for the prompt/currently typed line + signal to user that we are ready
-		server_tx.unbounded_send(Message::Text(ascii::AsciiChar::FF.to_string())).unwrap(); 
-		
+		server_tx.unbounded_send(Message::Text(ascii::AsciiChar::FF.to_string())).unwrap();
+		// somehow send "\r\n" to activate terminal if FF doesn't show anything?
+
 		futures_util::pin_mut!(stdin_to_ws, ws_to_stdout);
 		future::select(stdin_to_ws, ws_to_stdout).await;
-	}	
+	}
 }
 
 /**
@@ -193,7 +179,6 @@ pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 		ctrl+shift+6 x -> alt+6
 	*/
 	
-
 	let code: Result<char, SmolStr> = match event {
 		KeyEvent { code: kc, modifiers: KeyModifiers::NONE } => match kc {
 			// regular (non-ctrl) key codes
@@ -209,7 +194,7 @@ pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 			KeyCode::Home => Ok(AsciiChar::SOH.as_char()),
 			KeyCode::End => Ok(AsciiChar::ENQ.as_char()),
 			KeyCode::Delete => Ok(AsciiChar::EOT.as_char()), // remove char to right of cursor (ctrl+d ?)
-			KeyCode::Esc => Ok(AsciiChar::ESC.as_char()), // ESC - Escape
+			KeyCode::Esc => Ok(AsciiChar::ESC.as_char()),    // ESC - Escape
 			KeyCode::Backspace => Ok(AsciiChar::BackSpace.as_char()),
 
 			// experimental based off https://www.novell.com/documentation/extend5/Docs/help/Composer/books/TelnetAppendixB.html
@@ -223,13 +208,11 @@ pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 			KeyCode::F(3) => Err(esc!("OR")),
 			KeyCode::F(4) => Err(esc!("OS")),
 			KeyCode::F(5) => Err(esc!("[15~")),
-			KeyCode::F(n @ 6..=10) => Err(SmolStr::new(format!("[{}~", n+11))),
-			KeyCode::F(n @ 11..=14) => Err(SmolStr::new(format!("[{}~", n+12))),
-			KeyCode::F(n @ 15..=16) => Err(SmolStr::new(format!("[{}~", n+13))),
-			KeyCode::F(n @ 17..=20) => Err(SmolStr::new(format!("[{}~", n+14))),
-			KeyCode::F(n @ _) => Err(format!("invalid function key: 'F{}'", n))?
-			
-			//c @ _ => Err(format!("unexpected non-modified key: '{:?}'", c))?,
+			KeyCode::F(n @ 6..=10) => Err(SmolStr::new(format!("[{}~", n + 11))),
+			KeyCode::F(n @ 11..=14) => Err(SmolStr::new(format!("[{}~", n + 12))),
+			KeyCode::F(n @ 15..=16) => Err(SmolStr::new(format!("[{}~", n + 13))),
+			KeyCode::F(n @ 17..=20) => Err(SmolStr::new(format!("[{}~", n + 14))),
+			KeyCode::F(n @ _) => Err(format!("invalid function key: 'F{}'", n))?, //c @ _ => Err(format!("unexpected non-modified key: '{:?}'", c))?,
 		},
 		KeyEvent { code: kc, modifiers: KeyModifiers::CONTROL } => match kc {
 			// ctrl key codes
@@ -238,7 +221,7 @@ pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 			KeyCode::Char(ch @ ('p' | 'n' | 'f' | 'b')) => Err((match ch {
 				'p' => ARROW_UP,
 				'n' => ARROW_DOWN,
-				'f' => ARROW_RIGHT,  // right - responds with <char at new position>
+                'f' => ARROW_RIGHT, // right - responds with <char at new position>
 				'b' => ARROW_LEFT,  // left - responds with <bksp>
 				_ => unreachable!(),
 			}).into()),
@@ -295,7 +278,7 @@ pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 
 						Ctrl+Shift+6, x -> Break current command (Mapped to ALT+6)
 					*/
-				}
+				},
 			},
 
 			c @ _ => Err(format!("unexpected ctrl+key: '{:?}'", c))?,
@@ -329,10 +312,7 @@ pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 }
 
 fn set_terminal_title(s: &str) -> Result<(), crossterm::ErrorKind> {
-	crossterm::execute!(
-		std::io::stdout(),
-		crossterm::terminal::SetTitle(s)
-	)
+    crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(s))
 }
 fn truncate_string<'a>(s: &'a str, len: usize) -> Cow<'a, str> {
 	if s.len() > len*4 {
@@ -371,5 +351,3 @@ fn log_ws_message(msg: &Message, id_str: &str, pings: bool) {
 		}
 	}
 }
-
-

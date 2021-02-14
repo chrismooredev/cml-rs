@@ -2,35 +2,18 @@
 #![feature(str_split_once)]
 #![feature(try_blocks)]
 
-use std::{cell::Cell, time::Instant};
-use std::borrow::Cow;
-use log::{error, warn, info, debug, trace};
 use clap::Clap;
-use tokio::net::TcpStream;
-//use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_native_tls::native_tls as native_tls;
-use tokio_native_tls::TlsConnector as TlsConnectorAsync;
-use native_tls::TlsConnector;
-use futures_util::{future, StreamExt};
-
-use tokio_tungstenite::tungstenite;
-use tokio_tungstenite::WebSocketStream;
-use tungstenite::protocol::Message;
-use tungstenite::error::Error as WsError;
-use tungstenite::handshake::client::Response as WsResponse;
-use tokio_native_tls::TlsStream;
+use log::trace;
 
 type CmlResult<T> = Result<T, cml::rest::Error>;
 
+use cmlterm::expose::SubCmdExpose;
 use cmlterm::listing::SubCmdList;
 use cmlterm::open_term::SubCmdOpen;
-use cmlterm::expose::SubCmdExpose;
-
 
 #[derive(Clap)]
 #[clap(version = "0.1.0", author = "Chris M. <35407569+csm123199@users.noreply.github.com>")]
 struct Args {
-
 	#[clap(subcommand)]
 	subc: SubCmd,
 }
@@ -49,7 +32,6 @@ struct SubCmdRun {
 	cmds: Vec<String>,
 }
 
-
 #[tokio::main]
 async fn main() -> CmlResult<()> {
 	env_logger::init();
@@ -59,14 +41,14 @@ async fn main() -> CmlResult<()> {
 	let args = Args::parse();
 
 	let auth = cml::get_auth_env().expect("Unable to get authentication info from environment");
-	
+
 	match &args.subc {
 		SubCmd::List(list) => list.run(&auth).await.unwrap(),
 		SubCmd::Open(open) => open.run(&auth.host).await,
 		SubCmd::Run(_run) => {
 			todo!("running individial/batch commands non-interactively");
 
-/*
+			/*
 			let (mut ws_stream, _) = connect_to_console(&auth.host, &run.uuid).await.unwrap();
 			eprintln!("websocket established");
 
@@ -84,7 +66,7 @@ async fn main() -> CmlResult<()> {
 			].iter().map(|s| s.as_str()).collect();
 
 			server_tx.unbounded_send(Ok(Message::Text(refresh_terminal))).unwrap();
-			
+
 			read
 				.for_each(|msg| {
 
@@ -105,7 +87,7 @@ async fn main() -> CmlResult<()> {
 					() = timeout => {},
 				}
 			}
-			
+
 
 			todo!();
 			*/
@@ -135,6 +117,3 @@ async fn main() -> CmlResult<()> {
 	cmlterm run /<LAB_NAME>/<DEVICE_NAME>[/LINE_NUMBER = 0] [COMMAND, ...] (or over stdin)
 	cmlterm run /<LAB_ID>/<DEVICE_ID>[/LINE_NUMBER = 0] [COMMAND, ...] (or over stdin)
 */
-
-
-

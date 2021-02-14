@@ -1,9 +1,8 @@
-
 #![feature(str_split_once)]
 
 use clap::Clap;
-use serde_json::Value;
 use cml::rest::{CmlUser, Error as RestError};
+use serde_json::Value;
 
 #[derive(Clap)]
 pub struct Args {
@@ -65,7 +64,6 @@ impl SubCmdGet {
 							termimad::print_text(l.description.trim());
 						}
 					},
-					
 				}
 			}
 		}

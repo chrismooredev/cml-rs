@@ -1,15 +1,13 @@
-
-use std::{collections::HashSet, time::Instant};
-use std::collections::HashMap;
-use std::fmt;
-use log::{error, warn, info, debug, trace};
 use clap::Clap;
+use log::trace;
 use rt::key::Console;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fmt;
 
 use cml::rest::{Authenticate, CmlUser};
 use cml::rt;
-use cml::rt::LabTopology;
 type CmlResult<T> = Result<T, cml::rest::Error>;
 
 pub struct ListingEntry {
@@ -67,7 +65,6 @@ impl fmt::Debug for ConsoleLabEntry {
 	}
 }
 
-
 struct ListingEntryVNCNode {
 	state: rt::State,
 	label: String,
@@ -90,7 +87,6 @@ pub struct SubCmdList {
 	#[clap(short, long, conflicts_with = "vnc")]
 	links: bool,
 }
-
 
 enum ListType {
 	Console,
@@ -319,5 +315,4 @@ impl SubCmdList {
 
 		*/
 	}
-
 }
