@@ -1,16 +1,16 @@
 #![feature(result_flattening)]
 #![feature(try_blocks)]
+#![feature(bool_to_option)]
+#![feature(drain_filter)]
 
 use std::convert::TryFrom;
 use std::env::VarError;
 use std::ffi::OsString;
-use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use tokio::runtime::Runtime;
 
 use cml::rest::CmlUser;
-use cml::rest_types as rt;
 type CmlResult<T> = Result<T, cml::rest::Error>;
 
 #[derive(Debug, Clone)]
@@ -229,6 +229,47 @@ impl CompletionVars {
 			prev_word,
 		})
 	}
+
+	fn has_flag(&self, s: char, l: &str) -> bool {
+		// self.line.ends_with(" $flag") || self.line.contains(" $flag ")
+		
+		let mut buf = String::with_capacity(l.len() + 2);
+		buf.push(' ');
+		buf.push_str(l);
+		if self.line.ends_with(&buf) { return true; }
+		buf.push(' ');
+		if self.line.contains(&buf) { return true; }
+
+		buf.clear();
+		buf.push_str(" -");
+		buf.push(s);
+		if self.line.ends_with(&buf) { return true; }
+		buf.push(' ');
+		if self.line.contains(&buf) { return true; }
+
+		false
+	}
+
+	fn suggest_flag<'a, II: IntoIterator<Item = &'a (&'a str, &'a str)>>(&self, only_on_dash: bool, s: II) -> Vec<&'a str> {
+		eprintln!("suggesting flags...");
+		//let words: Vec<_> = self.line.split(' ').collect();
+		match &self.word {
+			Some(cword) if !only_on_dash || cword.starts_with('-') => {
+				s.into_iter()
+					// eliminate already existing flags
+					//.filter(|(s, l)| !(words.contains(s) || words.contains(l)))
+					.filter(|(s, l)| !self.has_flag(s.chars().nth(1).unwrap(), l))
+					.inspect(|desc| eprintln!("flag does not exist: {:?}", desc))
+					.filter(|(_, l)| {
+						!cword.starts_with("--") || (cword.starts_with("--") && (cword.len() == 2 || l.starts_with(cword)))
+					})
+					.inspect(|desc| eprintln!("flag is compatible: {:?}", desc))
+					.map(|(_, l)| *l)
+					.collect()
+			}
+			Some(_) | None => Vec::new(),
+		}
+	}
 }
 enum QuoteStyle {
 	None,
@@ -255,65 +296,38 @@ fn bash_escape(s: String, style: QuoteStyle) -> String {
 	rtn
 }
 
-async fn list_labs(client: &CmlUser, all: bool) -> CmlResult<Vec<(String, String)>> {
-	async fn lab_name(client: &CmlUser, id: String, all: bool) -> Result<Option<(String, String)>, cml::rest::Error> {
-		let meta = client.lab(&id).await?.unwrap();
-		if all || meta.state == cml::rt::State::Started {
-			Ok(Some((id, meta.title)))
-		} else {
-			Ok(None)
+async fn get_nodes(client: &CmlUser, all: bool) -> CmlResult<Vec<(String, String, Vec<(String, String)>)>> {
+	async fn lab_data(client: &CmlUser, id: String, all: bool) -> CmlResult<Option<(String, String, Vec<(String, String)>)>> {
+		match client.lab_topology(&id, false).await? {
+			None => Ok(None),
+			Some(t) => {
+				if all || (client.username() == t.owner && t.state.active()) {
+					let title = t.title;
+					let nodes: Vec<_> = t.nodes.into_iter()
+						.filter(|n| all || n.data.state.active())
+						.map(|n| (n.id, n.data.label))
+						.collect();
+					Ok(Some((id, title, nodes)))
+				} else {
+					Ok(None)
+				}
+			}
 		}
 	}
+	
+	let lab_list: Vec<String> = client.labs(all).await?;
 
-	let ids = client.labs(all).await?;
-	let id_futs: Vec<_> = ids
-		.into_iter()
-		.map(|id| lab_name(client, id, all))
+	let lab_topos_futs: Vec<_> = lab_list.into_iter()
+		.map(|lid| lab_data(client, lid, all))
 		.collect();
-	let descs: Vec<_> = futures::future::join_all(id_futs)
-		.await
+	let lab_topos = futures::future::join_all(lab_topos_futs).await
 		.into_iter()
-		.filter_map(|r| r.transpose())
-		.collect::<Result<_, _>>()?;
-
-	Ok(descs)
+		.filter_map(|k| k.transpose())
+		.collect::<CmlResult<Vec<_>>>();
+		
+	lab_topos
 }
 
-async fn list_lab_nodes(client: &CmlUser, id: &str, all: bool) -> CmlResult<Vec<(String, String)>> {
-	let topo = client.lab_topology(id, false).await?.expect("lab eliminated during listings");
-	let nodedesc = topo.nodes.into_iter()
-		.filter(|d| all || matches!(d.data.state, rt::State::Booted | rt::State::Started))
-		.map(|d| (d.id, d.data.label))
-		.collect();
-
-	Ok(nodedesc)
-}
-
-async fn retrieve_nodes(client: &CmlUser, (lab_id, lab_name): (String, String), all: bool) -> CmlResult<(String, String, Vec<(String, String)>)> {
-	let nodes = list_lab_nodes(client, &lab_id, all).await?;
-	Ok((lab_id, lab_name, nodes))
-}
-
-fn suggest_flag<'a, II: IntoIterator<Item = &'a (&'a str, &'a str)>>(ctx: &CompletionVars, s: II) -> Vec<&'a str> {
-	eprintln!("suggesting flags...");
-	let words: Vec<_> = ctx.line.split(' ').collect();
-	match &ctx.word {
-		Some(cword) if cword.starts_with('-') => {
-			s.into_iter()
-				// eliminate already existing flags
-				.filter(|(s, l)| !(words.contains(s) || words.contains(l)))
-				.inspect(|desc| eprintln!("flag does not exist: {:?}", desc))
-				.filter(|(_, l)| {
-					!cword.starts_with("--")
-						|| (cword.starts_with("--") && (cword.len() == 2 || l.starts_with(cword)))
-				})
-				.inspect(|desc| eprintln!("flag is compatible: {:?}", desc))
-				.map(|(_, l)| *l)
-				.collect()
-		}
-		Some(_) | None => Vec::new(),
-	}
-}
 fn remove_matching<S: AsRef<str>, F: Fn(&str) -> bool>(v: &mut Vec<S>, f: F) {
 	let f = &f;
 	while let Some(i) = v.iter().map(|s| s.as_ref()).position(f) {
@@ -341,8 +355,7 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 		let is_links = words.contains(&"-l") || words.contains(&"--links");
 		eprintln!("(is_vnc, is_links) = {:?}", (is_vnc, is_links));
 
-		let mut c = suggest_flag(
-			&ctx,
+		let mut c = ctx.suggest_flag(false,
 			&[
 				("-a", "--all"),
 				("-j", "--json"),
@@ -371,74 +384,90 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 		}
 		*/
 
-		let res: Result<Vec<String>, cml::rest::Error> = try {
-			let auth = cml::get_auth_env().unwrap();
-			let client = auth.login().await.unwrap();
-			let show_all = words.contains(&"-a") || words.contains(&"--all");
+		let mut completes: Vec<String> = Vec::new();
+		let show_all = ctx.has_flag('b', "--boot");
 
-			let mut opts = Vec::new();
-			let is_path = cword.starts_with('/');
-			if cword.len() == 0 || is_path {
-				// get paths, put them into opts
-				// if no lab, only complete up to lab
-				// if lab, complete node
-				// if node, complete line
-				let seperator_ind = cword
-					.chars()
-					.enumerate()
-					.skip(1) // skip initial slash
-					.find(|(i, c)| *c == '/' && cword.chars().nth(i - 1).unwrap() != '\\')
-					.map(|(i, _)| i);
+		let auth = cml::get_auth_env().unwrap();
+		let client = auth.login().await?;
 
-				match seperator_ind {
-					None => {
-						// get labs
-						let pairs = list_labs(&client, show_all).await?;
+		if cword.starts_with('-') {
+			let flags = ctx.suggest_flag(true,
+				&[
+					("-b", "--boot"),
+				],
+			);
+			flags.iter().for_each(|s| completes.push(s.to_string()));
+		}
 
-						// get the lab's nodes
-						/*let node_futs: Vec<_> = pairs.into_iter()
-							.map(|lab_desc| retrieve_nodes(&client, lab_desc, show_all))
-							.collect();
-						let labs_nodes: Vec<_> = futures::future::join_all(node_futs).await
-							.into_iter()
-							.collect::<CmlResult<_>>()?;*/
+		let curr_keys = client.keys_console(show_all).await?;
+		if cword.len() == 0 || cword.starts_with('/') {
+			// /lab_<id/name>/[node_<id/name>/[line = 0]]
+		
+			// complete for lab IDs/names
+			let nodes = get_nodes(&client, show_all).await?;
 
-						// hashset in case there are labs with names the same as IDs
-						let mut ah: HashSet<String> = HashSet::new();
+			match cword.get(1..).map(|s| s.find('/')).flatten() {
+				None => {
+					nodes.into_iter()
+						.fold(Vec::new(), |mut v, (id, name, _)| {
+							v.push(id); v.push(name); v
+						})
+						.into_iter()
+						.map(|mut s| {
+							s.insert(0, '/');
+							s.push('/');
+							bash_escape(s, QuoteStyle::None)
+						})
+						.for_each(|s| completes.push(s));
+				},
+				Some(i_m1) => {
+					let i = i_m1+1;
+					// validate lab ID/name
+					// complete for node IDs/names
+					// line?
 
-						pairs.into_iter().for_each(|(id, name)| {
-							ah.insert(id);
-							ah.insert(name);
-						});
+					let lab_desc = &cword[1..i];
+					eprintln!("lab descriptor: {:?}", lab_desc);
 
-						// asdasdadsasdasd
-						ah.drain()
-							.map(|mut s| {
-								s.insert(0, '/');
-								s
-							})
-							.filter(|s| cword.len() == 0 || s.starts_with(cword))
-							.for_each(|s| opts.push(s));
-					}
-					Some(si) => {
-						// validate current lab name
-						// emit nodes
+					let lab_info = nodes.into_iter()
+						.find(|(id, name, _)| lab_desc == id || lab_desc == name)
+						.map(|(_, _, nodes)| nodes);
+
+					if let Some(nodes) = lab_info {
+						// validated lab - find node IDs/names
+
+						// use the same term the user used, don't try to change it
+						let front = format!("/{}/", lab_desc);
+
+						nodes.into_iter()
+							.for_each(|(mut nid, mut nname)| {
+								nid.insert_str(0, &front);
+								nname.insert_str(0, &front);
+								completes.push(bash_escape(nid, QuoteStyle::None));
+								completes.push(bash_escape(nname, QuoteStyle::None));
+
+								// user may add trailing slash if they want to specify a line, otherwise default to line=0
+							});
+					} else {
+						// found no lab by that name - do no autocompletion
 					}
 				}
 			}
-			if cword.len() == 0 || !is_path {
-				// get UUIDs, put them into opts
-				let keys = client.keys_console(show_all).await.unwrap();
-				keys.into_iter()
-					.map(|(uuid, _)| uuid)
-					.filter(|uuid| cword.len() == 0 || uuid.starts_with(cword))
-					.for_each(|uuid| opts.push(uuid));
-			}
+		}
+		if cword.len() == 0 || cword.starts_with(char::is_alphanumeric) {
+			// UUID
 
-			opts
-		};
+			// cannot show unbooted nodes
+			// it would be bad to boot each and every node just for completion's sake
+			curr_keys
+				.into_iter()
+				// add trailing space to "complete" the UUID argument
+				.for_each(|(k, _)| completes.push(k + " "));
+		}
 
-		res.unwrap()
+		completes.drain_filter(|s| cword.len() != 0 && !s.starts_with(cword)).count();
+		
+		completes
 	} else {
 		todo!("unimplemented shell completion case");
 	};

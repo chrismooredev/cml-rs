@@ -131,8 +131,6 @@ impl RawApiResponse {
 fn get_cml_client(token: Option<&str>) -> RResult<Client> {
 	// many CML instances are self-signed
 	let mut builder = Client::builder().danger_accept_invalid_certs(true);
-    let mut builder = Client::builder().danger_accept_invalid_certs(true); 
-	let mut builder = Client::builder().danger_accept_invalid_certs(true);
 
 	if let Some(t) = token {
 		let mut hm = HeaderMap::new();
@@ -298,6 +296,22 @@ impl CmlUser {
 			},
 			(status @ _, resp @ _) => Err(ApiError::new(endpoint, ApiErrorType::BadResponse(format!("Bad response for status {}", status), format!("{:?}", resp))).into()),
 		}
+	}
+
+	pub async fn lab_topologies<'b, I: IntoIterator<Item = &'b S>, S: AsRef<str> + 'b>(&'_ self, lab_ids: I, include_configurations: bool) -> RResult<Vec<(&'b str, Option<rt::LabTopology>)>> {
+		async fn get_topo<'a>(client: &'_ CmlUser, s: &'a str, configs: bool) -> RResult<(&'a str, Option<rt::LabTopology>)> {
+			let topo = client.lab_topology(s, configs).await?;
+			Ok((s, topo))
+		}
+		
+		let futs: Vec<_> = lab_ids.into_iter()
+			.map(|id| get_topo(self, id.as_ref(), include_configurations))
+			.collect();
+		let topos = futures::future::join_all(futs).await
+			.into_iter()
+			.collect::<RResult<_>>()?;
+
+		Ok(topos)
 	}
 
 	/// Returns the currently available console lines. This does not show lines from shutdown devices.

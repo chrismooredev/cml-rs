@@ -135,17 +135,10 @@ impl<'a> ListingContext<'a> {
 				node_lines.keys().map(|(lid, _)| lid.to_string()).collect()
 			};
 
-			let lab_topo_futures: Vec<_> = lab_ids.into_iter()
-				.map(async move |lid| {
-					self.client.lab_topology(&lid, false).await
-						.map(|opt| opt.expect("Lab deleted during execuition. Rerun query."))
-						.map(move |topo| (lid, topo))
-				})
-				.collect();
-
-			let lab_topos: Vec<(String, rt::LabTopology)> = futures::future::join_all(lab_topo_futures).await
+			let lab_topos: Vec<(String, rt::LabTopology)> = self.client.lab_topologies(&lab_ids, false).await?
 				.into_iter()
-				.collect::<Result<_, _>>()?;
+				.map(|(id, topo)| (id.to_string(), topo.expect("Lab deleted during execution. Rerun query.")))
+				.collect();
 			
 			// convert to HashMap
 			lab_topos.into_iter().collect()

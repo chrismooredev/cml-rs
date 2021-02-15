@@ -38,4 +38,4 @@ function __cmlterm_shell_comp() {
 	)
 }
 
-complete -o nospace -F __cmlterm_shell_comp cmlterm
+complete -o nospace -o nosort -F __cmlterm_shell_comp cmlterm

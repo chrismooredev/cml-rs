@@ -4,9 +4,9 @@ use std::fmt;
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum State {
-	/// The device has been booted and is currently running.
+	/// The device/lab has been fully booted and is currently running.
 	Booted,
-	/// The device is in the process of starting up. (is fully running?)
+	/// The device/lab is partially booted, or in the process of starting up.
 	Started,
 	/// The device is in a queue to be started up.
 	Queued,
@@ -17,10 +17,10 @@ pub enum State {
 	DefinedOnCluster,
 }
 impl State {
-	fn active(&self) -> bool {
+	pub fn active(&self) -> bool {
 		matches!(self, State::Booted | State::Started | State::Queued)
 	}
-	fn inactive(&self) -> bool {
+	pub fn inactive(&self) -> bool {
 		matches!(self, State::DefinedOnCluster | State::DefinedOnCore | State::Stopped)
 	}
 }
