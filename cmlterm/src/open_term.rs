@@ -12,12 +12,17 @@ use tungstenite::error::Error as WsError;
 use tungstenite::protocol::Message;
 
 use cml::rest::Authenticate;
+use cml::rest_types as rt;
 type CmlResult<T> = Result<T, cml::rest::Error>;
 
 #[derive(Clap)]
 pub struct SubCmdOpen {
 	#[clap(short, long)]
 	vnc: bool,
+
+	/// Boots the machine if necessary. If autocompleting, also shows all available devices.
+	#[clap(short, long)]
+	boot: bool,
 
 	uuid_or_lab: String,
 }
@@ -29,15 +34,80 @@ impl SubCmdOpen {
 
 		let client = auth.login().await?;
 		let keys = client.keys_console(true).await?;
-		keys.into_iter()
+		keys.iter()
 			.for_each(|(k, _)| {
-				if &k == dest {
-					dest_uuid = Some(k);
+				if k == dest {
+					dest_uuid = Some(k.as_str());
 				}
 			});
+		if let None = dest_uuid {
+			let split: Vec<_> = dest.split('/').collect();
+			let indiv = match split.as_slice() {
+				&["", lab, node] => Some((lab, node, "0")),
+				&["", lab, node, line] => Some((lab, node, line)),
+				_ => None,
+			};
+			if let Some((lab_desc, node_desc, line)) = indiv {
+				let line: u64 = line.parse().expect("Unable to parse line as number");
+				let lab_ids = client.labs(true).await?;
+				let lab_topos: Vec<(String, rt::LabTopology)> = client.lab_topologies(&lab_ids, false).await?
+					.into_iter()
+					.map(|(id, topo_opt)| (id.to_string(), topo_opt.expect("Lab removed during exeuction. Rerun query")))
+					.collect();
+				
+				let lab = lab_topos.iter()
+					.find(|(id, topo)| id == lab_desc || topo.title == lab_desc);
+				
+				let (lab_id, lab_topo) = match lab {
+					Some(l) => l,
+					None => {
+						eprintln!("No lab found by ID/name: {:?}", lab_desc);
+						return Ok(()); // TODO: process exit code?
+					}
+				};
+
+				if lab_topo.state.inactive() && ! self.boot {
+					eprintln!("Lab not active, and boot flag was not passed. Exiting.");
+					return Ok(());
+				}
+
+				let node = lab_topo.nodes.iter()
+					.find(|node| node.id == node_desc || node.data.label == node_desc);
+				
+				let (node_id, node_data) = match node {
+					Some(n) => (&n.id, &n.data),
+					None => {
+						eprintln!("No node found in specified lab by ID/name: {:?}", node_desc);
+						return Ok(());
+					}
+				};
+
+				if node_data.state.inactive() && ! self.boot {
+					eprintln!("Node not active, and boot flag was not passed. Exiting.");
+					return Ok(());
+				}
+
+				if node_data.state.inactive() && self.boot {
+					// when doing so, run `GET /labs/{lab_id}/nodes/{node_id}/keys/console?line=0`
+					todo!("boot up node before trying to get console key");
+				}
+
+				let k = keys.iter()
+					.find(|(_, meta)| &meta.lab_id == lab_id && &meta.node_id == node_id && meta.line == line);
+			
+				match k {
+					Some((uuid, _)) => dest_uuid = Some(uuid),
+					None => {
+						eprintln!("Unable to find key for specified device. Exiting.");
+						return Ok(());
+					}
+				}
+			}
+		}
 
 
 		if let Some(uuid) = dest_uuid {
+			debug!("attemping to open console connection on {:?} to UUID {:?}", &auth.host, &uuid);
 			self.open_terminal(&auth.host, &uuid).await;
 		} else {
 			eprintln!("Unable to find device by path or invalid UUID: {:?}", dest);
