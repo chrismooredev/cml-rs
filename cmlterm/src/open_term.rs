@@ -11,6 +11,9 @@ use tokio_tungstenite::tungstenite;
 use tungstenite::error::Error as WsError;
 use tungstenite::protocol::Message;
 
+use cml::rest::Authenticate;
+type CmlResult<T> = Result<T, cml::rest::Error>;
+
 #[derive(Clap)]
 pub struct SubCmdOpen {
 	#[clap(short, long)]
@@ -19,9 +22,29 @@ pub struct SubCmdOpen {
 	uuid_or_lab: String,
 }
 impl SubCmdOpen {
-	pub async fn run(&self, host: &str) {
+	pub async fn run(&self, auth: &Authenticate) -> CmlResult<()> {
 		// TODO: if necessary, request UUID from lab/device/line
-		self.open_terminal(host, &self.uuid_or_lab).await;
+		let dest = &self.uuid_or_lab;
+		let mut dest_uuid = None;
+
+		let client = auth.login().await?;
+		let keys = client.keys_console(true).await?;
+		keys.into_iter()
+			.for_each(|(k, _)| {
+				if &k == dest {
+					dest_uuid = Some(k);
+				}
+			});
+
+
+		if let Some(uuid) = dest_uuid {
+			self.open_terminal(&auth.host, &uuid).await;
+		} else {
+			eprintln!("Unable to find device by path or invalid UUID: {:?}", dest);
+		}
+		
+
+		Ok(())
 	}
 
 	async fn open_terminal(&self, host: &str, uuid: &str) {
@@ -101,6 +124,7 @@ impl SubCmdOpen {
 
 			let msg = message.unwrap();
 			if let Message::Ping(d) = msg {
+				trace!("responding to websocket ping (message = {:?})", String::from_utf8_lossy(&d));
 				ws_tx.unbounded_send(Message::Pong(d)).unwrap();
 			} else if let Message::Binary(data) = msg {
 				let out = std::io::stdout();
@@ -128,9 +152,9 @@ impl SubCmdOpen {
 			}
 		}
 
-		let (ws_stream, _) = crate::connect_to_console(host, uuid).await.unwrap();
+		let (ws_stream, resp) = crate::connect_to_console(host, uuid).await.unwrap();
 
-		debug!("websocket established");
+		debug!("websocket established (HTTP status code {:?})", resp.status());
 
 		// create a channel to pipe stdin through
 		let (server_tx, server_rx) = futures_channel::mpsc::unbounded();

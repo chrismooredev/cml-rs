@@ -43,8 +43,8 @@ async fn main() -> CmlResult<()> {
 	let auth = cml::get_auth_env().expect("Unable to get authentication info from environment");
 
 	match &args.subc {
-		SubCmd::List(list) => list.run(&auth).await.unwrap(),
-		SubCmd::Open(open) => open.run(&auth.host).await,
+		SubCmd::List(list) => list.run(&auth).await?,
+		SubCmd::Open(open) => open.run(&auth).await?,
 		SubCmd::Run(_run) => {
 			todo!("running individial/batch commands non-interactively");
 

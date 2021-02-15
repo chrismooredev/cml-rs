@@ -25,6 +25,9 @@ pub mod listing;
 pub mod open_term;
 
 /// Connects to the given console UUID using secured websockets (accepting invalid/self-signed certificates).
+///
+/// ### Safety:
+/// Assumes the passed UUID is valid for the host. Passing an invalid/inactive UUID may crash the CML console multiplexor service.
 pub async fn connect_to_console(host: &str, uuid: &str) -> Result<(WebSocketStream<TlsStream<TcpStream>>, WsResponse), WsError> {
 	// connect to host
 	let s: TcpStream = TcpStream::connect((host, 443)).await.unwrap();
@@ -35,6 +38,9 @@ pub async fn connect_to_console(host: &str, uuid: &str) -> Result<(WebSocketStre
 		.build().unwrap();
 	let connector = TlsConnectorAsync::from(connector);
 	let s = connector.connect(host, s).await.unwrap();
+
+	// TODO: validate UUID first, otherwise we may crash the VIRL2 Device mux service
+	//       possible to do without authenticating and quering for console keys?
 
 	// connect using websockets
 	let endpoint = format!("wss://{}/ws/dispatch/frontend/console?uuid={}", host, uuid);
