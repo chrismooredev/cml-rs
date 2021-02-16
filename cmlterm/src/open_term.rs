@@ -118,9 +118,11 @@ impl SubCmdOpen {
 	}
 
 	async fn open_terminal(&self, host: &str, uuid: &str) {
+		use std::cell::Cell;
 		type WsSender = futures_channel::mpsc::UnboundedSender<Message>;
 		//type WsReceiver = futures_channel::mpsc::UnboundedReceiver<Message>;
 
+		let received_content: Cell<bool> = Cell::new(false);
 		async fn handle_terminal_input(tx: WsSender) {
 			use crossterm::event::{Event, EventStream};
 			use crossterm::terminal;
@@ -150,7 +152,7 @@ impl SubCmdOpen {
 					})
 				})
 				.for_each(|event_res| async move {
-					//debug!("(input event) {:?}", &event_res);
+					trace!("(input event) {:?}", &event_res);
 
 					match event_res {
 						Ok(event) => match event {
@@ -165,6 +167,9 @@ impl SubCmdOpen {
 					}
 				})
 				.await;
+
+			// we drop the WsSender, hopefully signalling to rx that we are done
+			debug!("done processing terminal input");
 		}
 		fn parse_terminal_prompt<'a>(data: &'a [u8]) -> Option<&'a str> {
 			fn trim_end(s: &str) -> &str {
@@ -188,9 +193,10 @@ impl SubCmdOpen {
 				// get prompt from start of line to end (not including space)
 				.map(|line_start| s[line_start..].trim())
 		}
-		async fn handle_ws_msg(ws_tx: &WsSender, message: Result<Message, WsError>) {
+		/// Accepts websocket messages from CML, and responds to pings, writes to stdout as necessary
+		/// Also sets the terminal's title, if applicable to the message.
+		async fn handle_ws_msg(ws_tx: &WsSender, message: Result<Message, WsError>, received: &Cell<bool>) {
 			use std::io::Write;
-			//eprintln!("Recieved: {:?}", &message);
 
 			let msg = message.unwrap();
 			if let Message::Ping(d) = msg {
@@ -199,27 +205,62 @@ impl SubCmdOpen {
 			} else if let Message::Binary(data) = msg {
 				let out = std::io::stdout();
 				let mut lock = out.lock();
+				let mut data = data.as_slice();
+
+				// if this is our first block of data, remove leading \r\n to prevent extra terminal line
+				if received.get() == false && data.starts_with(b"\r\n"){
+					data = &data[2..];
+				}
+				received.set(true);
 
 				// set terminal title
-				if let Some(prompt) = parse_terminal_prompt(&data) {
-					//eprintln!("parsed prompt: {:?}", prompt);
-					crossterm::execute!(lock, crossterm::terminal::SetTitle(prompt)).unwrap();
+				if let Some(pprompt) = parse_terminal_prompt(&data) {
+					trace!("parsed prompt: {:?}", pprompt);
+					crossterm::execute!(lock, crossterm::terminal::SetTitle(&pprompt)).unwrap();
 				}
 
 				lock.write_all(&data).unwrap();
 				lock.flush().unwrap();
-			} else if let Message::Close(r) = msg {
+			} else if let Message::Close(_close_msg) = msg {
 				// log to user that server as requested closing the socket?
-				//if let Some(reason) = r {
-				//eprintln!("Server has closed the stream: ({}, {:?})", reason.code, reason.reason);
-				//} else {
-				//eprintln!("Server has closed the stream.");
-				//}
-
-				// TODO: close the stream somehow?
+				// TODO: close the stream somehow by ensuring parent doesn't take more data?
 			} else {
 				eprintln!("Unexpected websocket message type: {:?}", msg);
 			}
+		}
+
+		/// Show a prompt to activate the terminal, if no prompt shows within 500ms of starting
+		async fn show_activate_prompt(ws_tx: WsSender, received: &Cell<bool>) -> Result<(), futures::channel::mpsc::TrySendError<Message>> {
+			use std::time::Duration;
+			
+			// reprint the current line for the prompt/currently typed line + signal to user that we are ready
+			// will also prime the prompt, if possible
+			ws_tx.unbounded_send(Message::Text(ascii::AsciiChar::FF.to_string())).unwrap();
+
+			// try 3 times to activate the terminal
+			let mut has_been_activated = false;
+			for _ in 0..3 {
+				trace!("[show_activate_prompt] sleeping for 1 secs");
+				tokio::time::sleep(Duration::from_millis(1000)).await;
+				trace!("[show_activate_prompt] done sleeping");
+
+				if ! received.get() {	
+					debug!("sending {:?} to activate the console", "\r");
+					ws_tx.unbounded_send(Message::text("\r"))?;
+				} else {
+					has_been_activated = true;
+					break;
+				}
+				
+				// attempt to wait until lock is released
+				trace!("[show_activate_prompt] no content sent... waiting before sending again");
+			}
+
+			if ! has_been_activated {
+				eprintln!("If necessary, press F1 to activate console...");
+			}
+			debug!("main future 'show_activate_prompt' completed");
+			Ok(())
 		}
 
 		let (ws_stream, resp) = crate::connect_to_console(host, uuid).await.unwrap();
@@ -228,29 +269,58 @@ impl SubCmdOpen {
 
 		// create a channel to pipe stdin through
 		let (server_tx, server_rx) = futures_channel::mpsc::unbounded();
+		let server_tx_stdin = server_tx.clone();
+		let server_tx_pong = server_tx.clone();
+		let server_tx_init = server_tx.clone();
+		// all of our senders should be declared above
+		// when all the senders are dropped/disconnected, the server send async task will exit
+		std::mem::drop(server_tx);
 
 		// stdin is block-on-read only, so spawn a new thread for it
-		tokio::spawn(handle_terminal_input(server_tx.clone()));
+		tokio::spawn(handle_terminal_input(server_tx_stdin));
+
+		// will overwrite the console title based on received messages
+		crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("CML Console")).unwrap();
 
 		// split websocket into seperate write/read streams
 		let (write, read) = ws_stream.split();
-		let stdin_to_ws = server_rx
-			.inspect(|msg| log_ws_message(msg, "send", false))
-			.map(Ok)
-			.forward(write);
-		let ws_to_stdout = read
-			.inspect(|msg| if let Ok(m) = msg { log_ws_message(m, "recv", false) })
-			.for_each(|msg| handle_ws_msg(&server_tx, msg));
 
-		// will overwrite the console title based on received messages
-		set_terminal_title("CML Console").unwrap();
+		let msg_buf_to_serv = async {
+			let out = server_rx
+				.inspect(|msg| log_ws_message(msg, "send", false))
+				.map(Ok)
+				.forward(write).await;
 
-		// reprint the current line for the prompt/currently typed line + signal to user that we are ready
-		server_tx.unbounded_send(Message::Text(ascii::AsciiChar::FF.to_string())).unwrap();
-		// somehow send "\r\n" to activate terminal if FF doesn't show anything?
+			// this is only closed once all writers are closed
+			debug!("stream 'msg_buf_to_serv' completed");
+			out
+		};
 
-		futures_util::pin_mut!(stdin_to_ws, ws_to_stdout);
-		future::select(stdin_to_ws, ws_to_stdout).await;
+		let ws_content_handle = &received_content;
+		let ws_to_stdout = async {
+			read
+				.inspect(|msg| if let Ok(m) = msg { log_ws_message(m, "recv", false) })
+				.for_each(|msg| handle_ws_msg(
+					&server_tx_pong, msg,
+					ws_content_handle
+				)).await;
+			debug!("stream 'ws_to_stdout' completed");
+
+			// make explicit so it isn't accidently broken
+			// this closes this instance of the sender
+			std::mem::drop(server_tx_pong);
+		};
+
+		// I'm not familiar enough with futures to know why this would be necessary for this use case.
+		//futures_util::pin_mut!(msg_buf_to_serv, ws_to_stdout);
+
+		let (s_to_ws, (), active_prompt_res) = future::join3(
+			msg_buf_to_serv,
+			ws_to_stdout,
+			show_activate_prompt(server_tx_init, &received_content)
+		).await;
+		s_to_ws.expect("error sending stdin to CML console");
+		active_prompt_res.expect("error attempting to activate prompt");
 	}
 }
 
@@ -406,9 +476,6 @@ pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 	}
 }
 
-fn set_terminal_title(s: &str) -> Result<(), crossterm::ErrorKind> {
-    crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(s))
-}
 fn truncate_string<'a>(s: &'a str, len: usize) -> Cow<'a, str> {
 	if s.len() > len*4 {
 		Cow::from(format!("{}<...truncated...>{}", &s[..len], &s[s.len()-len..]))
