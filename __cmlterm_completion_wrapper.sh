@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# source __shell_completion_wrapper.sh
-# declare -F _cmlterm_shell_comp cmlterm
+# Use as:
+#   source __cmlterm_completion_wrapper.sh
+#   declare -F __cmlterm_shell_comp cmlterm
 
 # COMP_CWORD - shell funcs
 # COMP_LINE
@@ -16,10 +17,18 @@
 # read COMPREPLY from stdout ('\0' seperated)
 
 function __cmlterm_shell_comp() {
-	exe="$1"
-	word="$2"
-	prev_word="$3"
+	local exe="$1"
+	local word="$2"
+	local prev_word="$3"
+	local BINNAME="__cmlterm_shell_completion"
+	local binpath="$BINNAME"
+	if which "./target/debug/$BINNAME" &>/dev/null ; then
+		binpath="./target/debug/$BINNAME"
+	elif which "../target/debug/$BINNAME" &>/dev/null ; then
+		binpath="../target/debug/$BINNAME"
+	fi # hopefully it's globally available... not much more we can try
 
+	# re-export it
 	export COMP_LINE="$COMP_LINE"
 	export COMP_POINT="$COMP_POINT"
 	export COMP_TYPE="$COMP_TYPE"
@@ -34,7 +43,7 @@ function __cmlterm_shell_comp() {
 		for i in "${COMP_WORDS[@]}" ; do
 			echo -n "$i"
 			echo -ne '\0'
-		done | ./target/debug/__cmlterm_shell_completion --wordbreaks "$COMP_WORDBREAKS" --exe "$exe" --word "$word" --prev-word "$3" 2>debug.txt
+		done | "$binpath" --wordbreaks "$COMP_WORDBREAKS" --exe "$exe" --word "$word" --prev-word "$3" 2>debug.txt
 	)
 }
 
