@@ -284,7 +284,7 @@ pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 			KeyCode::Left => Err(ARROW_LEFT.into()),
 
 			KeyCode::Tab => Ok('\t'),
-			KeyCode::Enter => Ok('\n'),
+			KeyCode::Enter => Ok('\r'),
 			KeyCode::Home => Ok(AsciiChar::SOH.as_char()),
 			KeyCode::End => Ok(AsciiChar::ENQ.as_char()),
 			KeyCode::Delete => Ok(AsciiChar::EOT.as_char()), // remove char to right of cursor (ctrl+d ?)
@@ -297,7 +297,8 @@ pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 			KeyCode::PageDown => Err(esc!("[6~")),
 			KeyCode::BackTab => Err(esc!("OP\x09")),
 			KeyCode::Null => Ok('\0'), // ctrl+spacebar ?
-			KeyCode::F(1) => Err(esc!("OP")),
+			//KeyCode::F(1) => Err(esc!("OP")),
+			KeyCode::F(1) => Err(SmolStr::new("\r\n")),
 			KeyCode::F(2) => Err(esc!("OQ")),
 			KeyCode::F(3) => Err(esc!("OR")),
 			KeyCode::F(4) => Err(esc!("OS")),
