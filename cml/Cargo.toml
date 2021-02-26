@@ -1,6 +1,6 @@
 [package]
 name = "cml"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Chris Moore <35407569+csm123199@users.noreply.github.com>"]
 edition = "2018"
 
