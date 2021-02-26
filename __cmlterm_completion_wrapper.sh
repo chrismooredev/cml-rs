@@ -16,7 +16,7 @@
 # supply COMP_WORDS over stdin ('\0' seperated)
 # read COMPREPLY from stdout ('\0' seperated)
 
-function __cmlterm_shell_comp() {
+function _cmlterm() {
 	local exe="$1"
 	local word="$2"
 	local prev_word="$3"
@@ -47,4 +47,11 @@ function __cmlterm_shell_comp() {
 	)
 }
 
-complete -o nospace -o nosort -F __cmlterm_shell_comp cmlterm
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] || echo "the completions script must be sourced into the shell, not ran as a subshell"
+
+complete -r cmlterm 2>/dev/null
+complete -r .cmlterm 2>/dev/null
+complete -r ./target/debug/cmlterm 2>/dev/null
+complete -r ../target/debug/cmlterm 2>/dev/null
+complete -o nospace -o nosort -F _cmlterm cmlterm
+complete -o nospace -o nosort -F _cmlterm .cmlterm

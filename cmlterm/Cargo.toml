@@ -32,3 +32,6 @@ hex = "0.4.2"
 
 cml = { path = "../cml" }
 
+# commandline completion
+smallvec = "1.6.1"
+

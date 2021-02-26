@@ -2,16 +2,26 @@
 #![feature(try_blocks)]
 #![feature(bool_to_option)]
 #![feature(drain_filter)]
+#![feature(map_into_keys_values)]
+#![feature(or_patterns)]
+#![feature(cow_is_borrowed)]
 
 use std::convert::TryFrom;
 use std::env::VarError;
 use std::ffi::OsString;
+use std::borrow::Cow;
 use std::io;
 use std::path::{Path, PathBuf};
 use tokio::runtime::Runtime;
 
 use cml::rest::CmlUser;
 type CmlResult<T> = Result<T, cml::rest::Error>;
+
+mod iter_extensions;
+mod shell_quote;
+
+use shell_quote::{ QuoteStyle, Substrings, QuotedString, };
+use iter_extensions::{ IterExt, };
 
 #[derive(Debug, Clone)]
 enum CompletionError {
@@ -230,24 +240,13 @@ impl CompletionVars {
 		})
 	}
 
-	fn has_flag(&self, s: char, l: &str) -> bool {
-		// self.line.ends_with(" $flag") || self.line.contains(" $flag ")
-		
-		let mut buf = String::with_capacity(l.len() + 2);
-		buf.push(' ');
-		buf.push_str(l);
-		if self.line.ends_with(&buf) { return true; }
-		buf.push(' ');
-		if self.line.contains(&buf) { return true; }
-
-		buf.clear();
-		buf.push_str(" -");
-		buf.push(s);
-		if self.line.ends_with(&buf) { return true; }
-		buf.push(' ');
-		if self.line.contains(&buf) { return true; }
-
-		false
+	fn has_flag(&self, s: &str, l: &str) -> bool {
+		Substrings::new(self.line.as_bytes())
+			.find(|e| {
+				let lossy = e.to_string_lossy().0;
+				lossy == s || lossy == l
+			})
+			.is_some()
 	}
 
 	fn suggest_flag<'a, II: IntoIterator<Item = &'a (&'a str, &'a str)>>(&self, only_on_dash: bool, s: II) -> Vec<&'a str> {
@@ -257,8 +256,7 @@ impl CompletionVars {
 			Some(cword) if !only_on_dash || cword.starts_with('-') => {
 				s.into_iter()
 					// eliminate already existing flags
-					//.filter(|(s, l)| !(words.contains(s) || words.contains(l)))
-					.filter(|(s, l)| !self.has_flag(s.chars().nth(1).unwrap(), l))
+					.filter(|(s, l)| !self.has_flag(s, l))
 					.inspect(|desc| eprintln!("flag does not exist: {:?}", desc))
 					.filter(|(_, l)| {
 						!cword.starts_with("--") || (cword.starts_with("--") && (cword.len() == 2 || l.starts_with(cword)))
@@ -270,31 +268,26 @@ impl CompletionVars {
 			Some(_) | None => Vec::new(),
 		}
 	}
-}
-enum QuoteStyle {
-	None,
-	Single,
-	Double,
-}
-fn bash_escape(s: String, style: QuoteStyle) -> String {
-	match style {
-		QuoteStyle::None => {}
-		QuoteStyle::Single => todo!("single quote arguments"),
-		QuoteStyle::Double => todo!("double quote arguments"),
-	};
 
-	let mut rtn = String::new();
-	for c in s.chars() {
-		if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':') {
-			rtn.push(c);
-		} else {
-			rtn.push('\\');
-			rtn.push(c);
+	/// Returns the words in the line (up to the cursor), seperated out by whitespace.
+	///
+	/// As this removes information about quote styles, this is not suitable for generating a completion item.
+	fn as_words_lossy<'a>(&self) -> (Vec<String>, bool) {
+		let mut closed = true;
+		let mut words = Vec::new();
+		for ur in Substrings::new(self.line[..self.cursor].as_bytes()) {
+			if let QuotedString::Separator(_) = ur.unescaped { continue; }
+			let (s, _, wc) = ur.to_string_lossy();
+			words.push(s.to_string());
+			closed = wc;
 		}
-	}
 
-	rtn
+		(words, closed)
+	}
 }
+
+
+
 
 async fn get_nodes(client: &CmlUser, all: bool) -> CmlResult<Vec<(String, String, Vec<(String, String)>)>> {
 	async fn lab_data(client: &CmlUser, id: String, all: bool) -> CmlResult<Option<(String, String, Vec<(String, String)>)>> {
@@ -330,29 +323,49 @@ async fn get_nodes(client: &CmlUser, all: bool) -> CmlResult<Vec<(String, String
 
 fn remove_matching<S: AsRef<str>, F: Fn(&str) -> bool>(v: &mut Vec<S>, f: F) {
 	let f = &f;
-	while let Some(i) = v.iter().map(|s| s.as_ref()).position(f) {
-		v.remove(i);
-	}
+	v.drain_filter(|s| f(s.as_ref())).count();
 }
 
 async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 	let ctx = &ctx;
+
 	// only use bash-specific stuff for now
-	let cword = ctx.word.as_ref().unwrap();
+	//let (cword_style, cword) = QuoteStyle::bash_unescape(ctx.word.as_ref().unwrap(), true);
+	//let cword_res = QuoteStyle::bash_unescape(ctx.word.as_ref().unwrap().as_bytes());
+	let cword_res = Substrings::new(ctx.line[..ctx.cursor].as_bytes())
+		.last()
+		.filter(|ur| ! matches!(ur.unescaped, QuotedString::Separator(_)));
+
+	let (cword_ws, cword) = if let Some(ur) = cword_res.as_ref() {
+		let (cword, cword_ws, _closed) = ur.to_string_lossy();
+		(cword_ws, cword)
+	} else {
+		(QuoteStyle::Backslash, Cow::Borrowed(""))
+	};
+	
 	let pword = ctx.prev_word.as_ref().unwrap();
-	let words = ctx.words.as_ref().unwrap();
-	let words = words.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+	let words = ctx.as_words_lossy().0;
+	let words = words.iter().map(|s| s.as_ref()).collect::<Vec<_>>();
+
+	//eprintln!("cword quote style: {:?}", cword_ws);
+	eprintln!("cword: ({:?}, {:?})", cword_ws, cword);
+	eprintln!("words: {:?}", words);
 
 	let completes: Vec<String> = if pword.ends_with("cmlterm") {
-		["list", "open", "expose", /* run */]
-			.iter()
-			.filter(|so| cword.len() == 0 || so.starts_with(cword))
-			.map(|s| s.to_string() + " ")
+		(["open", "list", "expose", /* run */])
+			.iter().map(|s| *s)
+			.inspect(|s| eprintln!("filtering {:?}", s))
+			.quote_matches(cword.as_ref(), cword_ws, true)
+			.inspect(|s| eprintln!("passed filter {:?}", s))
+			// add a space to the end - there should be nothing to concat this string to
+			.map(|s| s.into_owned() + " ")
 			.collect()
 	} else if let Some(&"list") = words.get(1) {
+		// `list` only has flags - no positional arguments
+
 		// --vnc and --links are incompatible
-		let is_vnc = words.contains(&"-v") || words.contains(&"--vnc");
-		let is_links = words.contains(&"-l") || words.contains(&"--links");
+		let is_vnc = ctx.has_flag("-v", "--vnc");
+		let is_links = ctx.has_flag("-l", "--links");
 		eprintln!("(is_vnc, is_links) = {:?}", (is_vnc, is_links));
 
 		let mut c = ctx.suggest_flag(false,
@@ -374,7 +387,9 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 		}
 
 		// add spaces to be ready for the next flag/arg
-		let c: Vec<String> = c.into_iter().map(|s| s.to_string() + " ").collect();
+		let c: Vec<String> = c.into_iter()
+			.map(|s| s.to_string() + " ")
+			.collect();
 
 		c
 	} else if let Some(&"open") = words.get(1) {
@@ -385,7 +400,7 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 		*/
 
 		let mut completes: Vec<String> = Vec::new();
-		let show_all = ctx.has_flag('b', "--boot");
+		let show_all = ctx.has_flag("-b", "--boot");
 
 		let auth = cml::get_auth_env().unwrap();
 		let client = auth.login().await?;
@@ -409,16 +424,16 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 			match cword.get(1..).map(|s| s.find('/')).flatten() {
 				None => {
 					nodes.into_iter()
-						.fold(Vec::new(), |mut v, (id, name, _)| {
-							v.push(id); v.push(name); v
-						})
-						.into_iter()
-						.map(|mut s| {
-							s.insert(0, '/');
-							s.push('/');
-							bash_escape(s, QuoteStyle::None)
-						})
-						.for_each(|s| completes.push(s));
+						.map(|(id, name, _)| (id, name))
+						.flatten_tuple2()
+						.map(|mut s| { s.insert(0, '/'); s.push('/'); s })
+						.inspect(|s| eprintln!("testing for lab completion: {:?}", s))
+						.filter_matches(cword.as_ref())
+						.quote_word(cword_ws, false)
+						.inspect(|s| eprintln!("passed test: {:?}", s))
+						//.inspect(|s| eprintln!("inserting lab descriptor {:?} into completions list", s))
+						// skip trailing quote since we have more (a node) do to after
+						.for_each(|s| completes.push(s.into_owned()));
 				},
 				Some(i_m1) => {
 					let i = i_m1+1;
@@ -428,27 +443,30 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 
 					let lab_desc = &cword[1..i];
 					eprintln!("lab descriptor: {:?}", lab_desc);
+					let node_desc = &cword[i+1..];
+					eprintln!("node descriptor: {:?}", node_desc);
 
 					let lab_info = nodes.into_iter()
-						.find(|(id, name, _)| lab_desc == id || lab_desc == name)
+						.find(|(id, name, _)| &lab_desc == id || &lab_desc == name)
 						.map(|(_, _, nodes)| nodes);
 
 					if let Some(nodes) = lab_info {
 						// validated lab - find node IDs/names
 
 						// use the same term the user used, don't try to change it
-						let front = format!("/{}/", lab_desc);
+						//let front = format!("/{}/", lab_desc);
+						//let front = String::new();
 
 						nodes.into_iter()
-							.for_each(|(mut nid, mut nname)| {
-								nid.insert_str(0, &front);
-								nname.insert_str(0, &front);
-								completes.push(bash_escape(nid, QuoteStyle::None));
-								completes.push(bash_escape(nname, QuoteStyle::None));
-
-								// user may add trailing slash if they want to specify a line, otherwise default to line=0
-							});
+							.flatten_tuple2()
+							// if this node matches the currently typed node string, then suggest
+							.filter_matches(node_desc)
+							.map(|s| format!("/{}/{}", lab_desc, s))
+							.quote_word(cword_ws, true)
+							.for_each(|s| completes.push(s.into_owned()));
+							// user may add trailing slash if they want to specify a line, otherwise default to line=0
 					} else {
+						eprintln!("found no lab by that name");
 						// found no lab by that name - do no autocompletion
 					}
 				}
@@ -459,17 +477,18 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 
 			// cannot show unbooted nodes
 			// it would be bad to boot each and every node just for completion's sake
-			curr_keys
-				.into_iter()
-				// add trailing space to "complete" the UUID argument
-				.for_each(|(k, _)| completes.push(k + " "));
+			
+			let mut keys: Vec<_> = curr_keys.into_keys().collect();
+			keys.sort();
+			keys.into_iter()
+				.filter_matches(cword.as_ref())
+				.quote_word(cword_ws, true)
+				.for_each(|k| completes.push(k.into_owned()));
 		}
-
-		completes.drain_filter(|s| cword.len() != 0 && !s.starts_with(cword)).count();
 		
 		completes
 	} else {
-		todo!("unimplemented shell completion case");
+		todo!("unimplemented shell completion case (ctx: {:#?}) (words: {:?})", ctx, words);
 	};
 
 	// must perform the escaping at generation, cannot blindly escape all

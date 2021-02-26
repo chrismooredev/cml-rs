@@ -190,6 +190,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "smallvec",
  "smol_str",
  "tokio",
  "tokio-native-tls",
