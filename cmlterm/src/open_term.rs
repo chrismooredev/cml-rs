@@ -18,11 +18,19 @@ type CmlResult<T> = Result<T, cml::rest::Error>;
 #[derive(Clap)]
 pub struct SubCmdOpen {
 	#[clap(short, long)]
-	vnc: bool,
+	_vnc: bool,
 
 	/// Boots the machine if necessary. If autocompleting, also shows all available devices.
 	#[clap(short, long)]
 	boot: bool,
+
+	/// Does not affect functionality, shows lab/node IDs when auto-completing
+	#[clap(short, long)]
+	_ids: bool,
+
+	/// Does not affect functionality, shows console UUIDs when auto-completing
+	#[clap(short, long)]
+	_uuids: bool,
 
 	uuid_or_lab: String,
 }

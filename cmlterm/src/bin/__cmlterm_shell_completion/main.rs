@@ -1,10 +1,8 @@
 #![feature(result_flattening)]
-#![feature(try_blocks)]
 #![feature(bool_to_option)]
 #![feature(drain_filter)]
-#![feature(map_into_keys_values)]
-#![feature(or_patterns)]
 #![feature(cow_is_borrowed)]
+#![feature(map_into_keys_values)]
 
 use std::convert::TryFrom;
 use std::env::VarError;
@@ -15,6 +13,7 @@ use std::path::{Path, PathBuf};
 use tokio::runtime::Runtime;
 
 use cml::rest::CmlUser;
+use cml::rest_types as rt;
 type CmlResult<T> = Result<T, cml::rest::Error>;
 
 mod iter_extensions;
@@ -290,7 +289,7 @@ impl CompletionVars {
 
 
 async fn get_nodes(client: &CmlUser, all: bool) -> CmlResult<Vec<(String, String, Vec<(String, String)>)>> {
-	async fn lab_data(client: &CmlUser, id: String, all: bool) -> CmlResult<Option<(String, String, Vec<(String, String)>)>> {
+	async fn lab_data(client: &CmlUser, id: String, all: bool, valid_node_types: &[String]) -> CmlResult<Option<(String, String, Vec<(String, String)>)>> {
 		match client.lab_topology(&id, false).await? {
 			None => Ok(None),
 			Some(t) => {
@@ -298,6 +297,7 @@ async fn get_nodes(client: &CmlUser, all: bool) -> CmlResult<Vec<(String, String
 					let title = t.title;
 					let nodes: Vec<_> = t.nodes.into_iter()
 						.filter(|n| all || n.data.state.active())
+						.filter(|n| valid_node_types.contains(&n.data.node_definition))
 						.map(|n| (n.id, n.data.label))
 						.collect();
 					Ok(Some((id, title, nodes)))
@@ -308,10 +308,18 @@ async fn get_nodes(client: &CmlUser, all: bool) -> CmlResult<Vec<(String, String
 		}
 	}
 	
-	let lab_list: Vec<String> = client.labs(all).await?;
+	let lab_list = client.labs(all);
+	let node_defs = client.simplified_node_definitions();
+	let (lab_list, node_defs) = futures::future::join(lab_list, node_defs).await;
+	let (lab_list, node_defs): (Vec<String>, Vec<rt::SimpleNodeDefinition>) = (lab_list?, node_defs?);
+
+	let device_defs_with_consoles: Vec<String> = node_defs.into_iter()
+		.filter(|nd| nd.data.sim.console)
+		.map(|nd| nd.id)
+		.collect();
 
 	let lab_topos_futs: Vec<_> = lab_list.into_iter()
-		.map(|lid| lab_data(client, lid, all))
+		.map(|lid| lab_data(client, lid, all, &device_defs_with_consoles))
 		.collect();
 	let lab_topos = futures::future::join_all(lab_topos_futs).await
 		.into_iter()
@@ -401,6 +409,8 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 
 		let mut completes: Vec<String> = Vec::new();
 		let show_all = ctx.has_flag("-b", "--boot");
+		let show_ids = ctx.has_flag("-i", "--ids");
+		let show_uuids = ctx.has_flag("-u", "--uuids");
 
 		let auth = cml::get_auth_env().unwrap();
 		let client = auth.login().await?;
@@ -409,6 +419,8 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 			let flags = ctx.suggest_flag(true,
 				&[
 					("-b", "--boot"),
+					("-i", "--ids"),
+					("-u", "--uuids"),
 				],
 			);
 			flags.iter().for_each(|s| completes.push(s.to_string()));
@@ -425,7 +437,9 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 				None => {
 					nodes.into_iter()
 						.map(|(id, name, _)| (id, name))
+						.map(|(id, name)| (show_ids.then_some(id), Some(name)))
 						.flatten_tuple2()
+						.filter_map(|o| o)
 						.map(|mut s| { s.insert(0, '/'); s.push('/'); s })
 						.inspect(|s| eprintln!("testing for lab completion: {:?}", s))
 						.filter_matches(cword.as_ref())
@@ -458,7 +472,9 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 						//let front = String::new();
 
 						nodes.into_iter()
+							.map(|(id, name)| (show_ids.then_some(id), Some(name)))
 							.flatten_tuple2()
+							.filter_map(|o| o)
 							// if this node matches the currently typed node string, then suggest
 							.filter_matches(node_desc)
 							.map(|s| format!("/{}/{}", lab_desc, s))
@@ -472,7 +488,7 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 				}
 			}
 		}
-		if cword.len() == 0 || cword.starts_with(char::is_alphanumeric) {
+		if show_uuids && cword.len() == 0 || cword.starts_with(char::is_alphanumeric) {
 			// UUID
 
 			// cannot show unbooted nodes

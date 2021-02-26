@@ -378,6 +378,23 @@ impl CmlUser {
 			(status @ _, resp @ _) => Err(ApiError::new(endpoint, ApiErrorType::BadResponse(format!("Bad response for status {}", status), format!("{:?}", resp))).into()),
 		}
 	}
+
+	pub async fn simplified_node_definitions(&self) -> RResult<Vec<rt::SimpleNodeDefinition>> {
+		let resp = self.get_v0("/simplified_node_definitions")
+			.send().await?;
+		let endpoint = resp.url().path().to_owned();
+		let rresp = RawApiResponse::extract(resp).await?;
+
+		match rresp {
+			(200, RawApiResponse::Json(j)) => {
+				match serde_json::from_value::<Vec<rt::SimpleNodeDefinition>>(j.clone()) {
+					Ok(t) => Ok(t),
+					Err(sje) => Err(ApiError::new(endpoint, ApiErrorType::JsonDecode("Unable to read JSON response as a proper type".into(), j.to_string(), sje)).into()),
+				}
+			},
+			(status @ _, resp @ _) => Err(ApiError::new(endpoint, ApiErrorType::BadResponse(format!("Bad response for status {}", status), format!("{:?}", resp))).into()),
+		}
+	}
 }
 
 #[derive(Debug)]

@@ -177,3 +177,69 @@ pub mod labeled {
 		pub data: T,
 	}
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SimpleNodeDefinition {
+	pub id: String,
+	pub image_definitions: Vec<String>,
+	pub data: SimpleNodeDefData,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SimpleNodeDefData {
+	pub general: NodeDefData::General,
+	pub device: NodeDefData::Device,
+	pub ui: NodeDefData::UI,
+	pub sim: NodeDefData::Sim,
+}
+mod NodeDefData {
+	use super::*;
+
+	#[derive(Serialize, Deserialize, Debug)]
+	pub struct General {
+        pub description: String,
+        pub nature: String,
+        pub read_only: bool,
+	}
+
+	#[derive(Serialize, Deserialize, Debug)]
+	pub struct Device {
+		pub interfaces: Interfaces,
+	}
+	#[derive(Serialize, Deserialize, Debug)]
+	pub struct Interfaces {
+		pub has_loopback_zero: bool,
+		pub default_count: usize,
+		pub physical: Vec<String>,
+		pub serial_ports: usize,
+	}
+
+	#[derive(Serialize, Deserialize, Debug)]
+	pub struct UI {
+        pub description: String,
+        pub group: String,
+        pub icon: String,
+        pub label: String,
+        pub label_prefix: String,
+        pub visible: bool,
+        pub has_configuration: bool,
+        pub show_ram: bool,
+        pub show_cpus: bool,
+        pub show_cpu_limit: bool,
+        pub show_data_volume: bool,
+        pub show_boot_disk_size: bool,
+        pub has_config_extraction: bool,
+	}
+
+	#[derive(Serialize, Deserialize, Debug)]
+	pub struct Sim {
+		pub ram: Option<usize>,
+		pub cpus: Option<usize>,
+		pub cpu_limit: Option<usize>,
+		pub data_volume: Option<usize>,
+		pub boot_disk_size: Option<usize>,
+		pub console: bool,
+		pub simulate: bool,
+		pub vnc: bool,
+	}
+}
