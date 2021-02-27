@@ -17,6 +17,8 @@ This suite of Rust crates provides CLI-based utilities to make managing and auto
   * Matches the terminal name to the currently connected device's prompt
   * Enables some otherwise unavailable/hard-to-remember keyboard shortcuts
     * home/end/delete/ctrl-left/ctrl-right/etc
+  * Pipe in multiple commands using stdin to automate terminal sessions
+    * highly recommended: use --wait to wait for the next prompt between commands
   * TODO: custom menu accessible by ctrl-q ??
   * TODO: basic opt-in coloring
     * colorize prompt by (copy prompt, \r, color, print prompt, reset color on enter)

@@ -24,6 +24,10 @@ pub struct SubCmdOpen {
 	#[clap(short, long)]
 	boot: bool,
 
+	/// If accepting input over stdin, then waits for prompt before sending next command
+	#[clap(short, long)]
+	wait: bool,
+
 	/// Does not affect functionality, shows lab/node IDs when auto-completing
 	#[clap(short, long)]
 	_ids: bool,
@@ -138,13 +142,18 @@ impl SubCmdOpen {
 		/// Handles interactive input over a tty, or uses stdin on non-interactive inputs.
 		///
 		/// If using stdin, this waits until a prompt is shown from `show_activate_prompt` or gives up after 5 seconds
-		async fn handle_terminal_input(tx: WsSender, mut term_ready: Receiver<Option<(String, bool)>>) {
+		async fn handle_terminal_input(tx: WsSender, stdin_should_wait: bool, term_ready: Receiver<Option<(String, bool)>>) {
 			use crossterm::event::{Event, EventStream};
 			use crossterm::tty::IsTty;
 			use crossterm::terminal;
 
 			if std::io::stdin().is_tty() {
 				debug!("stdin: is tty");
+
+				if stdin_should_wait {
+					// TODO: detect multi-line pastes and use --wait for that?
+					eprintln!("info: --wait does nothing for interactive terminals");
+				}
 
 				// Disable line buffering, local echo, etc.
 				terminal::enable_raw_mode().unwrap();
@@ -194,32 +203,79 @@ impl SubCmdOpen {
 			} else {
 				debug!("stdin: is not tty");
 
-				async fn handle_stdin(tx: WsSender, mut term_ready: Receiver<Option<(String, bool)>>) -> std::io::Result<()> {
-					use tokio::io::AsyncReadExt;
-					let mut stdin = tokio::io::stdin();
-					let mut buf = Vec::with_capacity(512);
-					while stdin.read_buf(&mut buf).await? != 0 {
-						if buf.len() > 0 {
-							// ran out of bytes, but not EOF
-							
+				async fn handle_stdin(tx: WsSender, stdin_should_wait: bool, mut term_ready: Receiver<Option<(String, bool)>>) -> std::io::Result<()> {
+					use std::time::Duration;
+					use tokio::io::{ BufReader, AsyncBufReadExt };
+					
+					const PROMPT_TIMEOUT_FIRST: u64 = 5;
+					const PROMPT_TIMEOUT_OTHER: u64 = 30;
+
+					let mut stdin = BufReader::new(tokio::io::stdin());
+					let mut linebuf = Vec::with_capacity(128);
+					//let mut first_command = true;
+					let mut sent_commands: usize = 0;
+
+					while stdin.read_until(b'\n', &mut linebuf).await? != 0 {
+						// TODO: allow escape character to skip the waiting mechanism
+						
+						// we should have flushed all previous bytes in last iteration - we should not enter this loop on EOF
+						assert!(linebuf.len() > 0);
+						
+						// received a line
+						
+						if stdin_should_wait || sent_commands == 0 {
+							// wait for the next prompt (with a timeout) before sending a chunk of data
+							let timeout = if sent_commands == 0 { PROMPT_TIMEOUT_FIRST } else { PROMPT_TIMEOUT_OTHER };
+							tokio::select! {
+								_ = tokio::time::sleep(Duration::from_secs(timeout)) => {
+									eprintln!("prompt timer timed out, stopping ({}s for {}, command ##{})",
+										timeout,
+										if sent_commands == 0 {
+											format!("first prompt")
+										} else {
+											format!("intermediate prompt")
+										},
+										sent_commands
+									);
+								},
+								_ = term_ready.changed() => {
+									// surround in brackets so we don't borrow for too long
+
+									// unwrap_or(false) so we can wait until we have a prompt - there may a command finishing
+									let ready = { term_ready.borrow().as_ref().map(|(_, b)| *b).unwrap_or(false) };
+									
+									if ready {
+										// clone the vec so we can transmit the owned data, and keep our capacity
+										let s = linebuf.clone();
+										tx.unbounded_send(Message::Text(String::from_utf8(s).expect("input must be valid UTF8"))).unwrap();
+										linebuf.clear();
+										sent_commands += 1;
+									}
+								}
+							}
+						} else {
 							// clone the vec so we can transmit the owned data, and keep our capacity
-							let s = buf.clone();
+							let s = linebuf.clone();
 							tx.unbounded_send(Message::Text(String::from_utf8(s).expect("input must be valid UTF8"))).unwrap();
-							buf.clear();
+							linebuf.clear();
 						}
+
 					}
+
+					assert!(linebuf.len() == 0, "that we flushed all buffers before ending loop");
+
 					// EOF
-					if buf.len() > 0 {
+					/*if linebuf.len() > 0 {
 						// push remaining bytes
-						tx.unbounded_send(Message::Text(String::from_utf8(buf).expect("input must be valid UTF8"))).unwrap();
-					}
+						tx.unbounded_send(Message::Text(String::from_utf8(linebuf).expect("input must be valid UTF8"))).unwrap();
+					}*/
 
 					debug!("stdin: reached EOF - waiting for prompt (or 30s) before closing");
 
 					loop {
 						tokio::select! {
-							_ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
-								debug!("unable to find console prompt after 30s - closing connection");
+							_ = tokio::time::sleep(std::time::Duration::from_secs(PROMPT_TIMEOUT_OTHER)) => {
+								debug!("unable to find console prompt after {}s - closing connection", PROMPT_TIMEOUT_OTHER);
 								break;
 							},
 							_ = term_ready.changed() => {
@@ -234,27 +290,11 @@ impl SubCmdOpen {
 					tx.unbounded_send(Message::Close(None)).unwrap();
 
 					// we drop the WsSender, hopefully signalling to rx that we are done
-
 					Ok(())
 				}
 
-				tokio::select! {
-					_ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-						// did not get a prompt after 5 seconds - give up & exit
-
-						eprintln!("no prompt found after 5 seconds - giving up");
-						debug!("unable to find console prompt - closing connection");
-
-						tx.unbounded_send(Message::Close(None)).unwrap();
-					},
-					_ = term_ready.changed() => {
-						// attempt to clear current prompt line, then start with stdin
-
-						let res = tokio::spawn(handle_stdin(tx, term_ready)).await.unwrap();
-						res.unwrap();
-					},
-				};
-
+				let res = tokio::spawn(handle_stdin(tx, stdin_should_wait, term_ready)).await.unwrap();
+				res.unwrap();
 			}
 
 			debug!("done processing stdin/terminal input");
@@ -309,6 +349,9 @@ impl SubCmdOpen {
 					trace!("parsed/emitting prompt: {:?}", pprompt);
 					crossterm::execute!(lock, crossterm::terminal::SetTitle(&pprompt)).unwrap();
 					prompt_tx.send(Some((pprompt.to_string(), pprompt_end))).expect("prompt_tx send not to fail");
+				} else {
+					// we can use this as a notification for if data was received or not
+					prompt_tx.send(None).expect("prompt_tx send not to fail");
 				}
 	
 				// it doesn't matter if this fails
@@ -429,7 +472,7 @@ impl SubCmdOpen {
 			show_activate_prompt(server_tx_init, received_rx),
 
 			// stdin is block-on-read only, but crossterm will spawn a new thread for it internally
-			handle_terminal_input(server_tx_stdin, prompt_rx_input),
+			handle_terminal_input(server_tx_stdin, self.wait, prompt_rx_input),
 		).await;
 		s_to_ws.expect("error sending stdin to CML console");
 		active_prompt_res.expect("error attempting to activate prompt");

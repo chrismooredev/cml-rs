@@ -411,6 +411,8 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 		let show_all = ctx.has_flag("-b", "--boot");
 		let show_ids = ctx.has_flag("-i", "--ids");
 		let show_uuids = ctx.has_flag("-u", "--uuids");
+		// unused - doesn't affect completion
+		let _should_wait = ctx.has_flag("-w", "--wait");
 
 		let auth = cml::get_auth_env().unwrap();
 		let client = auth.login().await?;
@@ -421,6 +423,7 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 					("-b", "--boot"),
 					("-i", "--ids"),
 					("-u", "--uuids"),
+					("-w", "--wait"),
 				],
 			);
 			flags.iter().for_each(|s| completes.push(s.to_string()));
