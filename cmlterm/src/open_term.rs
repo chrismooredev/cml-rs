@@ -126,84 +126,172 @@ impl SubCmdOpen {
 	}
 
 	async fn open_terminal(&self, host: &str, uuid: &str) {
-		use std::cell::Cell;
+		use tokio::sync::watch::{self, Sender, Receiver};
 		type WsSender = futures_channel::mpsc::UnboundedSender<Message>;
 		//type WsReceiver = futures_channel::mpsc::UnboundedReceiver<Message>;
 
-		let received_content: Cell<bool> = Cell::new(false);
-		async fn handle_terminal_input(tx: WsSender) {
+		//let received_content: Cell<bool> = Cell::new(false);
+		let (received_tx, received_rx) = watch::channel::<bool>(false);
+		let (prompt_tx, prompt_rx) = watch::channel::<Option<(String, bool)>>(None);
+		let prompt_rx_input = prompt_rx;
+
+		/// Handles interactive input over a tty, or uses stdin on non-interactive inputs.
+		///
+		/// If using stdin, this waits until a prompt is shown from `show_activate_prompt` or gives up after 5 seconds
+		async fn handle_terminal_input(tx: WsSender, mut term_ready: Receiver<Option<(String, bool)>>) {
 			use crossterm::event::{Event, EventStream};
+			use crossterm::tty::IsTty;
 			use crossterm::terminal;
 
-			// Disable line buffering, local echo, etc.
-			terminal::enable_raw_mode().unwrap();
+			if std::io::stdin().is_tty() {
+				debug!("stdin: is tty");
 
-			let tx = &tx;
-			EventStream::new()
-				.take_while(move |event| {
-					const CTRL_D: KeyEvent = KeyEvent {
-						code: KeyCode::Char('d'),
-						modifiers: KeyModifiers::CONTROL,
-					};
-					future::ready(match event {
-						Ok(Event::Key(CTRL_D)) => {
-							// print a newline since echo is disabled
-							println!("\r");
+				// Disable line buffering, local echo, etc.
+				terminal::enable_raw_mode().unwrap();
 
-							terminal::disable_raw_mode().unwrap();
+				// move the sender into this scope
+				let tx = tx;
+				let tx = &tx;
 
-							tx.unbounded_send(Message::Close(None)).unwrap();
+				// EventStream will spawn a new thread for stdin, since stdin is block-on-read
+				// stdin is the default for EventStream
+				EventStream::new()
+					.take_while(move |event| {
+						const CTRL_D: KeyEvent = KeyEvent {
+							code: KeyCode::Char('d'),
+							modifiers: KeyModifiers::CONTROL,
+						};
+						future::ready(match event {
+							Ok(Event::Key(CTRL_D)) => {
+								// print a newline since echo is disabled
+								println!("\r");
 
-							false
-						}
-						_ => true,
+								terminal::disable_raw_mode().unwrap();
+
+								tx.unbounded_send(Message::Close(None)).unwrap();
+
+								false
+							}
+							_ => true,
+						})
 					})
-				})
-				.for_each(|event_res| async move {
-					trace!("(input event) {:?}", &event_res);
+					.for_each(|event_res| async move {
+						trace!("(input event) {:?}", &event_res);
 
-					match event_res {
-						Ok(event) => match event {
-							Event::Key(kevent) => match event_to_code(kevent) {
-								//Ok(c) => send(&tx, c.to_string()),
-								Ok(c) => tx.unbounded_send(Message::Text(c.to_string())).unwrap(),
-								Err(e) => warn!("unable to convert key code to sendable sequence: {}", e),
+						match event_res {
+							Ok(event) => match event {
+								Event::Key(kevent) => match event_to_code(kevent) {
+									//Ok(c) => send(&tx, c.to_string()),
+									Ok(c) => tx.unbounded_send(Message::Text(c.to_string())).unwrap(),
+									Err(e) => warn!("unable to convert key code to sendable sequence: {}", e),
+								},
+								c @ _ => warn!("unhandled terminal event: {:?}", c),
 							},
-							c @ _ => warn!("unhandled terminal event: {:?}", c),
-						},
-						Err(e) => error!("error occured from stdin: {:?}", e),
-					}
-				})
-				.await;
+							Err(e) => error!("error occured from stdin: {:?}", e),
+						}
+					})
+					.await;
+			} else {
+				debug!("stdin: is not tty");
 
-			// we drop the WsSender, hopefully signalling to rx that we are done
-			debug!("done processing terminal input");
-		}
-		fn parse_terminal_prompt<'a>(data: &'a [u8]) -> Option<&'a str> {
-			fn trim_end(s: &str) -> &str {
-				//TODO: loop until no changes have been made?
-				let mut s = s.trim_end();
-				let removed_seqs = ["\x1B[6n"];
-				for seq in &removed_seqs {
-					s = s.trim_end_matches(seq);
+				async fn handle_stdin(tx: WsSender, mut term_ready: Receiver<Option<(String, bool)>>) -> std::io::Result<()> {
+					use tokio::io::AsyncReadExt;
+					let mut stdin = tokio::io::stdin();
+					let mut buf = Vec::with_capacity(512);
+					while stdin.read_buf(&mut buf).await? != 0 {
+						if buf.len() > 0 {
+							// ran out of bytes, but not EOF
+							
+							// clone the vec so we can transmit the owned data, and keep our capacity
+							let s = buf.clone();
+							tx.unbounded_send(Message::Text(String::from_utf8(s).expect("input must be valid UTF8"))).unwrap();
+							buf.clear();
+						}
+					}
+					// EOF
+					if buf.len() > 0 {
+						// push remaining bytes
+						tx.unbounded_send(Message::Text(String::from_utf8(buf).expect("input must be valid UTF8"))).unwrap();
+					}
+
+					debug!("stdin: reached EOF - waiting for prompt (or 30s) before closing");
+
+					loop {
+						tokio::select! {
+							_ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+								debug!("unable to find console prompt after 30s - closing connection");
+								break;
+							},
+							_ = term_ready.changed() => {
+								// attempt to clear current prompt line, then start with stdin
+								if let Some((_, finished)) = *term_ready.borrow() {
+									if finished { break; }
+								}
+							},
+						};
+					}
+
+					tx.unbounded_send(Message::Close(None)).unwrap();
+
+					// we drop the WsSender, hopefully signalling to rx that we are done
+
+					Ok(())
 				}
-				s.trim_end()
+
+				tokio::select! {
+					_ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+						// did not get a prompt after 5 seconds - give up & exit
+
+						eprintln!("no prompt found after 5 seconds - giving up");
+						debug!("unable to find console prompt - closing connection");
+
+						tx.unbounded_send(Message::Close(None)).unwrap();
+					},
+					_ = term_ready.changed() => {
+						// attempt to clear current prompt line, then start with stdin
+
+						let res = tokio::spawn(handle_stdin(tx, term_ready)).await.unwrap();
+						res.unwrap();
+					},
+				};
+
 			}
 
-			// hopefully each prompt is < 32 chars
-			//let data = if data.len() > 32 { &data[data.len()-32..] } else { &data };
-			let s = std::str::from_utf8(data).ok()?;
-
-			let s = trim_end(&s); // some devices have spaces/escape codes afterward
-			s.ends_with(|c| c == '#' || c == '>' || c == '$') // IOS+Linux prompts
-				.then(|| s.rfind(|c| c == '\r' || c == '\n')) // devices emit newlines differently
-				.flatten()
-				// get prompt from start of line to end (not including space)
-				.map(|line_start| s[line_start..].trim())
+			debug!("done processing stdin/terminal input");
 		}
+		
+		// returns the parsed prompt, and if the prompt is the last segment in the data (except for whitespace)
+		fn parse_terminal_prompt<'a>(data: &'a [u8]) -> Option<(&'a str, bool)> {
+			if let Ok(s) = std::str::from_utf8(data) {
+				let prompt = s.char_indices()
+					.rev() // find last if possible
+					.filter(|&(_, c)| c == '\r' || c == '\n') // start going from starts of lines
+					.map(|(i, _)| s[i..].trim_start())
+					.filter_map(|s| {
+						// IOS+Linux prompts
+						let end = s.find(|c| c == '#' || c == '>' || c == '$');
+						end.map(|i| &s[..i+1])
+					})
+					.next();
+	
+				trace!("detected prompt: {:?} (from data chunk {:?})", prompt, s);
+				if let Some(prompt) = prompt {
+					Some((
+						prompt, s.trim_end().ends_with(prompt)
+					))
+				} else {
+					None
+				}
+			} else {
+				trace!("data chunk was not UTF8, skipping prompt detection");
+				None
+			}
+		}
+
+
 		/// Accepts websocket messages from CML, and responds to pings, writes to stdout as necessary
 		/// Also sets the terminal's title, if applicable to the message.
-		async fn handle_ws_msg(ws_tx: &WsSender, message: Result<Message, WsError>, received: &Cell<bool>) {
+		async fn handle_ws_msg(ws_tx: &WsSender, message: Result<Message, WsError>, received: &Sender<bool>, prompt_tx: &&mut Sender<Option<(String, bool)>>) {
 			use std::io::Write;
 
 			let msg = message.unwrap();
@@ -215,16 +303,21 @@ impl SubCmdOpen {
 				let mut lock = out.lock();
 				let mut data = data.as_slice();
 
-				// if this is our first block of data, remove leading \r\n to prevent extra terminal line
-				if received.get() == false && data.starts_with(b"\r\n"){
-					data = &data[2..];
-				}
-				received.set(true);
-
 				// set terminal title
-				if let Some(pprompt) = parse_terminal_prompt(&data) {
-					trace!("parsed prompt: {:?}", pprompt);
+				trace!("testing data for prompt...");
+				if let Some((pprompt, pprompt_end)) = parse_terminal_prompt(&data) {
+					trace!("parsed/emitting prompt: {:?}", pprompt);
 					crossterm::execute!(lock, crossterm::terminal::SetTitle(&pprompt)).unwrap();
+					prompt_tx.send(Some((pprompt.to_string(), pprompt_end))).expect("prompt_tx send not to fail");
+				}
+	
+				// it doesn't matter if this fails
+				if data.len() > 0 { let _ = received.send(true); }
+
+				// if this is our first block of data, remove leading \r\n to prevent extra terminal line
+				// note that the prompt detection relies on leading newlines
+				if *received.borrow() == false && data.starts_with(b"\r\n") {
+					data = &data[2..];
 				}
 
 				lock.write_all(&data).unwrap();
@@ -238,7 +331,7 @@ impl SubCmdOpen {
 		}
 
 		/// Show a prompt to activate the terminal, if no prompt shows within 500ms of starting
-		async fn show_activate_prompt(ws_tx: WsSender, received: &Cell<bool>) -> Result<(), futures::channel::mpsc::TrySendError<Message>> {
+		async fn show_activate_prompt(ws_tx: WsSender, mut received: Receiver<bool>) -> Result<(), futures::channel::mpsc::TrySendError<Message>> {
 			use std::time::Duration;
 			
 			// reprint the current line for the prompt/currently typed line + signal to user that we are ready
@@ -249,17 +342,21 @@ impl SubCmdOpen {
 			let mut has_been_activated = false;
 			for _ in 0..3 {
 				trace!("[show_activate_prompt] sleeping for 1 secs");
-				tokio::time::sleep(Duration::from_millis(1000)).await;
-				trace!("[show_activate_prompt] done sleeping");
-
-				if ! received.get() {	
-					debug!("sending {:?} to activate the console", "\r");
-					ws_tx.unbounded_send(Message::text("\r"))?;
-				} else {
-					has_been_activated = true;
-					break;
+				tokio::select! {
+					_ = tokio::time::sleep(Duration::from_millis(1000)) => {
+						trace!("[show_activate_prompt] done sleeping");
+						const WAKE_STRING: &str = "\r";
+						debug!("sending {:?} to activate the console", WAKE_STRING);
+						ws_tx.unbounded_send(Message::text(WAKE_STRING))?;
+					},
+					_ = received.changed() => {
+						if *received.borrow() {
+							has_been_activated = true;
+							break;
+						}
+					}
 				}
-				
+
 				// attempt to wait until lock is released
 				trace!("[show_activate_prompt] no content sent... waiting before sending again");
 			}
@@ -274,6 +371,11 @@ impl SubCmdOpen {
 		let (ws_stream, resp) = crate::connect_to_console(host, uuid).await.unwrap();
 
 		debug!("websocket established (HTTP status code {:?})", resp.status());
+		trace!("websocket headers:");
+		for header in resp.headers().iter() {
+			trace!("\t{:?}", header);
+		}
+		
 
 		// create a channel to pipe stdin through
 		let (server_tx, server_rx) = futures_channel::mpsc::unbounded();
@@ -283,9 +385,6 @@ impl SubCmdOpen {
 		// all of our senders should be declared above
 		// when all the senders are dropped/disconnected, the server send async task will exit
 		std::mem::drop(server_tx);
-
-		// stdin is block-on-read only, so spawn a new thread for it
-		tokio::spawn(handle_terminal_input(server_tx_stdin));
 
 		// will overwrite the console title based on received messages
 		crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("CML Console")).unwrap();
@@ -304,13 +403,15 @@ impl SubCmdOpen {
 			out
 		};
 
-		let ws_content_handle = &received_content;
+		let ws_content_handle = &received_tx;
 		let ws_to_stdout = async {
+			let mut prompt_tx = prompt_tx;
+			let prompt_tx = &(&mut prompt_tx);
 			read
 				.inspect(|msg| if let Ok(m) = msg { log_ws_message(m, "recv", false) })
 				.for_each(|msg| handle_ws_msg(
 					&server_tx_pong, msg,
-					ws_content_handle
+					ws_content_handle, prompt_tx,
 				)).await;
 			debug!("stream 'ws_to_stdout' completed");
 
@@ -322,10 +423,13 @@ impl SubCmdOpen {
 		// I'm not familiar enough with futures to know why this would be necessary for this use case.
 		//futures_util::pin_mut!(msg_buf_to_serv, ws_to_stdout);
 
-		let (s_to_ws, (), active_prompt_res) = future::join3(
+		let (s_to_ws, (), active_prompt_res, ()) = future::join4(
 			msg_buf_to_serv,
 			ws_to_stdout,
-			show_activate_prompt(server_tx_init, &received_content)
+			show_activate_prompt(server_tx_init, received_rx),
+
+			// stdin is block-on-read only, but crossterm will spawn a new thread for it internally
+			handle_terminal_input(server_tx_stdin, prompt_rx_input),
 		).await;
 		s_to_ws.expect("error sending stdin to CML console");
 		active_prompt_res.expect("error attempting to activate prompt");
