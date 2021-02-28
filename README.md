@@ -14,12 +14,13 @@ This suite of Rust crates provides CLI-based utilities to make managing and auto
 * `cmlterm` - A command-line terminal for CML
   * Allows entering a device directly without an intermediary shell
   * WIP: bash commandline completion for lab/device IDs/names
+    * does not currently support double-quoted completions, or those with variables
   * Matches the terminal name to the currently connected device's prompt
   * Enables some otherwise unavailable/hard-to-remember keyboard shortcuts
     * home/end/delete/ctrl-left/ctrl-right/etc
   * Pipe in multiple commands using stdin to automate terminal sessions
     * highly recommended: use --wait to wait for the next prompt between commands
-  * TODO: custom menu accessible by ctrl-q ??
+    * Prefix a line with a grave ``` ` ``` to override the --wait flag, or to not wait for a prompt before entering commands. (Enter a backslash before it to input a literal grave at the beginning of a line)
   * TODO: basic opt-in coloring
     * colorize prompt by (copy prompt, \r, color, print prompt, reset color on enter)
 * (TODO) `cmldiff` - Obtains the saved/running config for a device, and compares it to another device's

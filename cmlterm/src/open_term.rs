@@ -240,7 +240,8 @@ impl SubCmdOpen {
 					while let Some(mut line) = stdin_lines.next_line().await? {
 						// TODO: allow escape character to skip the waiting mechanism (telnet, etc)
 						
-						if stdin_should_wait || sent_commands == 0 {
+						// if we were told to wait or this is our first command (and this line isn't "escaped")
+						if (stdin_should_wait || sent_commands == 0) && !line.starts_with('`') {
 							// wait for the next prompt (with a timeout) before sending a chunk of data
 							let timeout = if sent_commands == 0 { PROMPT_TIMEOUT_FIRST } else { PROMPT_TIMEOUT_OTHER };
 
@@ -251,6 +252,10 @@ impl SubCmdOpen {
 							}
 						}
 
+						// remove escape character, or escaped escape character
+						if line.starts_with("\\`") || line.starts_with('`') {
+							line.remove(0);
+						}
 						line.push('\r');
 						tx.unbounded_send(Message::Text(line)).unwrap();
 						sent_commands += 1;
