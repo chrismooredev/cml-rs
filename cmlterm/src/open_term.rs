@@ -125,6 +125,7 @@ impl SubCmdOpen {
 			eprintln!("Unable to find device by path or invalid UUID: {:?}", dest);
 		}
 		
+		debug!("closed terminal");
 
 		Ok(())
 	}
@@ -267,15 +268,13 @@ impl SubCmdOpen {
 					Ok(())
 				}
 
-				let res = tokio::spawn(handle_stdin(tx, stdin_should_wait, term_ready)).await.unwrap();
-				res.unwrap();
+				// since stdin is a blocking read, spawn it on a thread that may block
+				tokio::task::spawn_blocking(move || handle_stdin(tx, stdin_should_wait, term_ready)).await.unwrap().await.unwrap();
 			}
 
 			debug!("done processing stdin/terminal input");
 		}
 		
-		
-
 		/// Accepts websocket messages from CML, and responds to pings, writes to stdout as necessary
 		/// Also sets the terminal's title, if applicable to the message.
 		async fn handle_ws_msg(ws_tx: &WsSender, message: Result<Message, WsError>, received: &Sender<bool>, prompt_tx: &&mut Sender<Option<(String, bool)>>) {
@@ -293,8 +292,8 @@ impl SubCmdOpen {
 				// set terminal title
 				trace!("testing data for prompt...");
 				if let Some((pprompt, pprompt_end)) = parse_terminal_prompt(&data) {
-					trace!("parsed/emitting prompt: {:?}", pprompt);
-					crossterm::execute!(lock, crossterm::terminal::SetTitle(&pprompt)).unwrap();
+					trace!("parsed prompt: {:?}", pprompt);
+					SubCmdOpen::set_terminal_title(&mut lock, pprompt).unwrap();
 					prompt_tx.send(Some((pprompt.to_string(), pprompt_end))).expect("prompt_tx send not to fail");
 				} else {
 					// we can use this as a notification for if data was received or not
@@ -377,7 +376,7 @@ impl SubCmdOpen {
 		std::mem::drop(server_tx);
 
 		// will overwrite the console title based on received messages
-		crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("CML Console")).unwrap();
+		SubCmdOpen::set_terminal_title(&mut std::io::stdout(), "CML Console").unwrap();
 
 		// split websocket into seperate write/read streams
 		let (write, read) = ws_stream.split();
@@ -423,6 +422,14 @@ impl SubCmdOpen {
 		).await;
 		s_to_ws.expect("error sending stdin to CML console");
 		active_prompt_res.expect("error attempting to activate prompt");
+	}
+
+	fn set_terminal_title<T: crossterm::tty::IsTty + std::io::Write>(term: &mut T, title: &str) -> crossterm::Result<()> {
+		if term.is_tty() {
+			trace!("setting terminal title to {:?}", title);
+			crossterm::execute!(term, crossterm::terminal::SetTitle(title))?;
+		}
+		Ok(())
 	}
 }
 
@@ -584,7 +591,12 @@ fn parse_terminal_prompt<'a>(data: &'a [u8]) -> Option<(&'a str, bool)> {
 			.filter(|&(_, c)| c == '\r' || c == '\n') 
 			// trim starting whitespace, trim at 64+2 chars:
 			// hostnames cannot be bigger than 64, plus 2 for prompt character
-			.map(|(i, _)| &s[i..].trim_start()[..64+2]) 
+			.map(|(i, _)| {
+				let s = s[i..].trim_start();
+				// trim to 64 chars + 2 (only need 1?) for prompt character
+				let end = s.len().min(64+2);
+				&s[..end]
+			}) 
 			.filter_map(|s| {
 				// IOS+Linux prompts
 				let end = s.find(|c| c == '#' || c == '>' || c == '$');
