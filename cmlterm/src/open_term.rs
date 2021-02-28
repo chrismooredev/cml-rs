@@ -208,83 +208,57 @@ impl SubCmdOpen {
 					use tokio::io::{ BufReader, AsyncBufReadExt };
 					
 					const PROMPT_TIMEOUT_FIRST: u64 = 5;
-					const PROMPT_TIMEOUT_OTHER: u64 = 30;
+					const PROMPT_TIMEOUT_OTHER: u64 = 5;
 
-					let mut stdin = BufReader::new(tokio::io::stdin());
-					let mut linebuf = Vec::with_capacity(128);
-					//let mut first_command = true;
+					/// Wait for the next prompt, or wait until we have not recieved data in `timeout` seconds.
+					/// Returns `true` on a found prompt.
+					async fn wait_for_prompt(timeout: u64, term_ready: &mut Receiver<Option<(String, bool)>>) -> bool {
+						// this can be problematic of the server sends the prompt in seperate data chunks
+						
+						loop {
+							// keep looping until `term_ready` gives us a prompt, or we haven't received data for `timeout` seconds
+							// otherwise we could try once, and have term_ready give us `None`, signaling received non-prompt data
+							tokio::select! {
+								_ = tokio::time::sleep(Duration::from_secs(timeout)) => {
+									return false;
+								},
+								_ = term_ready.changed() => {
+									// wait until we have a prompt
+									if let Some((_, finished)) = *term_ready.borrow() {
+										if finished { return true; }
+									}
+								},
+							}
+						}
+					}
+
+					let mut stdin_lines = BufReader::new(tokio::io::stdin()).lines();
 					let mut sent_commands: usize = 0;
+					let mut timed_out = false;
 
-					while stdin.read_until(b'\n', &mut linebuf).await? != 0 {
-						// TODO: allow escape character to skip the waiting mechanism
-						
-						// we should have flushed all previous bytes in last iteration - we should not enter this loop on EOF
-						assert!(linebuf.len() > 0);
-						
-						// received a line
+					while let Some(mut line) = stdin_lines.next_line().await? {
+						// TODO: allow escape character to skip the waiting mechanism (telnet, etc)
 						
 						if stdin_should_wait || sent_commands == 0 {
 							// wait for the next prompt (with a timeout) before sending a chunk of data
 							let timeout = if sent_commands == 0 { PROMPT_TIMEOUT_FIRST } else { PROMPT_TIMEOUT_OTHER };
-							tokio::select! {
-								_ = tokio::time::sleep(Duration::from_secs(timeout)) => {
-									eprintln!("prompt timer timed out, stopping ({}s for {}, command ##{})",
-										timeout,
-										if sent_commands == 0 {
-											format!("first prompt")
-										} else {
-											format!("intermediate prompt")
-										},
-										sent_commands
-									);
-								},
-								_ = term_ready.changed() => {
-									// surround in brackets so we don't borrow for too long
 
-									// unwrap_or(false) so we can wait until we have a prompt - there may a command finishing
-									let ready = { term_ready.borrow().as_ref().map(|(_, b)| *b).unwrap_or(false) };
-									
-									if ready {
-										// clone the vec so we can transmit the owned data, and keep our capacity
-										let s = linebuf.clone();
-										tx.unbounded_send(Message::Text(String::from_utf8(s).expect("input must be valid UTF8"))).unwrap();
-										linebuf.clear();
-										sent_commands += 1;
-									}
-								}
+							if ! wait_for_prompt(timeout, &mut term_ready).await {
+								eprintln!("prompt timer timed out, stopping (waited {}s for command #{})", timeout, sent_commands);
+								timed_out = true;
+								break;
 							}
-						} else {
-							// clone the vec so we can transmit the owned data, and keep our capacity
-							let s = linebuf.clone();
-							tx.unbounded_send(Message::Text(String::from_utf8(s).expect("input must be valid UTF8"))).unwrap();
-							linebuf.clear();
 						}
 
-					}
-
-					assert!(linebuf.len() == 0, "that we flushed all buffers before ending loop");
-
-					// EOF
-					/*if linebuf.len() > 0 {
-						// push remaining bytes
-						tx.unbounded_send(Message::Text(String::from_utf8(linebuf).expect("input must be valid UTF8"))).unwrap();
-					}*/
+						line.push('\r');
+						tx.unbounded_send(Message::Text(line)).unwrap();
+						sent_commands += 1;
+					};
 
 					debug!("stdin: reached EOF - waiting for prompt (or 30s) before closing");
-
-					loop {
-						tokio::select! {
-							_ = tokio::time::sleep(std::time::Duration::from_secs(PROMPT_TIMEOUT_OTHER)) => {
-								debug!("unable to find console prompt after {}s - closing connection", PROMPT_TIMEOUT_OTHER);
-								break;
-							},
-							_ = term_ready.changed() => {
-								// attempt to clear current prompt line, then start with stdin
-								if let Some((_, finished)) = *term_ready.borrow() {
-									if finished { break; }
-								}
-							},
-						};
+					if !timed_out && !wait_for_prompt(PROMPT_TIMEOUT_OTHER, &mut term_ready).await {
+						// we did not time out, and we did not find a prompt after this command
+						eprintln!("unable to find console prompt after {}s - closing connection", PROMPT_TIMEOUT_OTHER);
 					}
 
 					tx.unbounded_send(Message::Close(None)).unwrap();
