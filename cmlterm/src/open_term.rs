@@ -274,34 +274,7 @@ impl SubCmdOpen {
 			debug!("done processing stdin/terminal input");
 		}
 		
-		// returns the parsed prompt, and if the prompt is the last segment in the data (except for whitespace)
-		fn parse_terminal_prompt<'a>(data: &'a [u8]) -> Option<(&'a str, bool)> {
-			if let Ok(s) = std::str::from_utf8(data) {
-				let prompt = s.char_indices()
-					.rev() // find last if possible
-					.filter(|&(_, c)| c == '\r' || c == '\n') // start going from starts of lines
-					.map(|(i, _)| s[i..].trim_start())
-					.filter_map(|s| {
-						// IOS+Linux prompts
-						let end = s.find(|c| c == '#' || c == '>' || c == '$');
-						end.map(|i| &s[..i+1])
-					})
-					.next();
-	
-				trace!("detected prompt: {:?} (from data chunk {:?})", prompt, s);
-				if let Some(prompt) = prompt {
-					Some((
-						prompt, s.trim_end().ends_with(prompt)
-					))
-				} else {
-					None
-				}
-			} else {
-				trace!("data chunk was not UTF8, skipping prompt detection");
-				None
-			}
-		}
-
+		
 
 		/// Accepts websocket messages from CML, and responds to pings, writes to stdout as necessary
 		/// Also sets the terminal's title, if applicable to the message.
@@ -453,11 +426,7 @@ impl SubCmdOpen {
 	}
 }
 
-/**
-Maps keyboard key events to a character sequence to send to a terminal.
-
-Returns a nested result - The outer result signifies a if there is a matching code, the inner result contains the actual key codes, depending on if it can be a char or constant string.
-*/
+/// Maps keyboard key events to a character sequence to send to a terminal.
 pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 	//use AsciiChar::*;
 
@@ -604,6 +573,49 @@ pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 		Err(ss) => Ok(ss),
 	}
 }
+
+// returns the parsed prompt, and if the prompt is the last segment in the data (except for whitespace)
+fn parse_terminal_prompt<'a>(data: &'a [u8]) -> Option<(&'a str, bool)> {
+	if let Ok(s) = std::str::from_utf8(data) {
+		let prompt = s.char_indices()
+			// find last if possible
+			.rev() 
+			// start going from starts of lines
+			.filter(|&(_, c)| c == '\r' || c == '\n') 
+			// trim starting whitespace, trim at 64+2 chars:
+			// hostnames cannot be bigger than 64, plus 2 for prompt character
+			.map(|(i, _)| &s[i..].trim_start()[..64+2]) 
+			.filter_map(|s| {
+				// IOS+Linux prompts
+				let end = s.find(|c| c == '#' || c == '>' || c == '$');
+				end
+					.filter(|i| {
+						// according to ASA: must start/end with alphanumeric, middle can contain dashes
+						// IOS allows middle underscores
+						let prompt = &s[..*i];
+						prompt.starts_with(|c: char| c.is_ascii_alphanumeric()) &&
+						prompt.ends_with(|c: char| c.is_ascii_alphanumeric()) &&
+						s[1..i-1].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+					})
+					.map(|i| &s[..i+1])
+			})
+			// get first (last because .rev()) found prompt
+			.next();
+
+		trace!("detected prompt: {:?} (from data chunk {:?})", prompt, s);
+		if let Some(prompt) = prompt {
+			Some((
+				prompt, s.trim_end().ends_with(prompt)
+			))
+		} else {
+			None
+		}
+	} else {
+		trace!("data chunk was not UTF8, skipping prompt detection");
+		None
+	}
+}
+
 
 fn truncate_string<'a>(s: &'a str, len: usize) -> Cow<'a, str> {
 	if s.len() > len*4 {
