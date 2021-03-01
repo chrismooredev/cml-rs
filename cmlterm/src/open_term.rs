@@ -1,16 +1,29 @@
+
+
+use std::sync::Arc;
+use std::io::Write;
 use std::borrow::Cow;
+use std::time::Duration;
+use std::collections::VecDeque;
+
 use clap::Clap;
-use futures::future::Either;
 use futures::stream::{SplitSink, SplitStream};
-use futures_channel::mpsc::UnboundedReceiver;
+use futures_util::FutureExt;
+use futures_channel::mpsc::{UnboundedSender, UnboundedReceiver};
 use futures_util::{future, StreamExt};
 use log::{debug, error, trace, warn};
-use tokio_native_tls::TlsStream;
 
 use ascii::AsciiChar;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::terminal;
+use crossterm::tty::IsTty;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, Event, EventStream};
 use smol_str::SmolStr;
 
+use tokio::sync::RwLock;
+use tokio::net::TcpStream;
+use tokio::io::{BufReader, AsyncBufReadExt};
+use tokio::sync::watch::{self, Sender, Receiver};
+use tokio_native_tls::TlsStream;
 use tokio_tungstenite::{WebSocketStream, tungstenite};
 use tungstenite::error::Error as WsError;
 use tungstenite::protocol::Message;
@@ -18,6 +31,10 @@ use tungstenite::protocol::Message;
 use cml::rest::Authenticate;
 use cml::rest_types as rt;
 type CmlResult<T> = Result<T, cml::rest::Error>;
+
+
+type WsSender = futures_channel::mpsc::UnboundedSender<Message>;
+
 
 const CTRL_D: KeyEvent = KeyEvent {
 	code: KeyCode::Char('d'),
@@ -153,29 +170,50 @@ impl SubCmdOpen {
 
 }
 
-use crossterm::tty::IsTty;
-use std::io::Write;
-use futures_util::FutureExt;
-use tokio::{net::TcpStream, sync::watch::{self, Sender, Receiver}};
-use futures_channel::mpsc::UnboundedSender;
-type WsSender = futures_channel::mpsc::UnboundedSender<Message>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScriptWaitCondition<'a> {
+	Prompt,
+	None,
+	StaticString(&'a str),
+}
+impl<'a> ScriptWaitCondition<'a> {
+	fn from_line(line: &'a str) -> (usize, ScriptWaitCondition<'a>) {
+		if line.starts_with("\\~") || line.starts_with("\\`") {
+			(1, ScriptWaitCondition::Prompt)
+		} else if line.starts_with('~') {
+			(1, ScriptWaitCondition::None)
+		} else if line.starts_with('`') {
+			line.char_indices()
+				.filter(|(i, _)| *i != 0) // not the first one
+				.filter(|(_, c)| *c == '`') // we are a grave
+				.filter(|(i, _)| ! line[..*i].ends_with('\\')) // previous is not a backslash
+				.map(|(i, _)| &line[1..i]) // string between the two graves
+				.next()
+				.map(|l| (2+l.len(), ScriptWaitCondition::StaticString(l)))
+				.unwrap_or((0, ScriptWaitCondition::Prompt))
+		} else {
+			(0, ScriptWaitCondition::Prompt)
+		}
+	}
+}
+
+const CACHE_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone)]
-struct TerminalHandler/*<O: IsTty + Write>*/ {
+struct TerminalHandler {
 	//output: O,
 	to_websocket: futures_channel::mpsc::UnboundedSender<Message>,
 	wait_for_prompt: bool,
 
+	tty_stdin: bool,
+	tty_stdout: bool,
+
 	received_first: Receiver<bool>,
 	last_prompt: Receiver<Option<(String, bool)>>,
 	last_data: Receiver<Option<Vec<u8>>>,
+	recent_chunk: Arc<RwLock<VecDeque<u8>>>,
 }
-impl std::ops::Drop for TerminalHandler {
-	fn drop(&mut self) {
-		debug!("dropping TerminalHandler");
-	}
-}
-impl/*<O: IsTty + Write>*/ TerminalHandler {
+impl TerminalHandler {
 	async fn runner(inst: &SubCmdOpen, ws_stream: WebSocketStream<TlsStream<TcpStream>>) {
 
 		// create handler
@@ -195,9 +233,15 @@ impl/*<O: IsTty + Write>*/ TerminalHandler {
 			//output: todo!(),
 			to_websocket: server_tx,
 			wait_for_prompt: inst.wait,
+
+			tty_stdin: tokio::io::stdin().is_tty(),
+			tty_stdout: tokio::io::stdout().is_tty(),
+
 			received_first: received_rx,
 			last_prompt: prompt_rx,
 			last_data: last_data_rx,
+
+			recent_chunk: Arc::new(RwLock::new(VecDeque::with_capacity(CACHE_CAPACITY))),
 		};
 
 		// will overwrite the console title based on received messages
@@ -235,10 +279,7 @@ impl/*<O: IsTty + Write>*/ TerminalHandler {
 	///
 	/// If using stdin, this waits until a prompt is shown from `show_activate_prompt` or gives up after 5 seconds
 	async fn handle_terminal_input(self, /*tx: WsSender, stdin_should_wait: bool, term_ready: Receiver<Option<(String, bool)>>, data_ready: Receiver<Option<Vec<u8>>>*/) {
-		use crossterm::event::{Event, EventStream};
-		use crossterm::terminal;
-
-		if std::io::stdin().is_tty() {
+		if self.tty_stdin {
 			debug!("stdin: is tty");
 
 			if self.wait_for_prompt {
@@ -292,7 +333,7 @@ impl/*<O: IsTty + Write>*/ TerminalHandler {
 			let moved_self = self.clone();
 			//let moved_self = &moved_self;
 			// since stdin is a blocking read, spawn it on a thread that may block
-			tokio::task::spawn_blocking(async move || moved_self.handle_stdin_script().await); //.await.unwrap().await.unwrap();
+			tokio::task::spawn_blocking(async move || moved_self.handle_stdin_script().await).await.unwrap().await.unwrap();
 		}
 	}
 	
@@ -312,7 +353,7 @@ impl/*<O: IsTty + Write>*/ TerminalHandler {
 		while let Some(msg) = read.next().await {
 			if let Ok(m) = &msg { log_ws_message(m, "recv", false) }
 
-			self.handle_ws_msg(&self.to_websocket, msg,
+			self.process_ws_msg(&self.to_websocket, msg,
 				&prompt_tx, &last_data_tx, &received_tx,
 			).await;
 		}
@@ -320,7 +361,7 @@ impl/*<O: IsTty + Write>*/ TerminalHandler {
 
 	/// Accepts websocket messages from CML, and responds to pings, writes to stdout as necessary
 	/// Also sets the terminal's title, if applicable to the message.
-	async fn handle_ws_msg(&self, ws_tx: &UnboundedSender<Message>, message: Result<Message, WsError>, prompt_tx: &Sender<Option<(String, bool)>>, last_data_tx: &Sender<Option<Vec<u8>>>, received_tx: &Sender<bool>) {
+	async fn process_ws_msg(&self, ws_tx: &UnboundedSender<Message>, message: Result<Message, WsError>, prompt_tx: &Sender<Option<(String, bool)>>, last_data_tx: &Sender<Option<Vec<u8>>>, received_tx: &Sender<bool>) {
 		let msg = message.unwrap();
 		if let Message::Ping(d) = msg {
 			trace!("responding to websocket ping (message = {:?})", String::from_utf8_lossy(&d));
@@ -330,32 +371,61 @@ impl/*<O: IsTty + Write>*/ TerminalHandler {
 			let mut lock = out.lock();
 			let mut data = odata.as_slice();
 
-			// set terminal title
-			let prompt_data = parse_terminal_prompt(data);
-			trace!("detected prompt: {:?}", prompt_data);
-			if let Some((pprompt, pprompt_end)) = prompt_data {
-				TerminalHandler::set_terminal_title(&mut lock, pprompt).unwrap();
-				prompt_tx.send(Some((pprompt.to_string(), pprompt_end))).expect("prompt_tx send not to fail");
-			} else {
-				// we can use this as a notification for if data was received or not
-				prompt_tx.send(None).expect("prompt_tx send not to fail");
+			// update our cache, later notify listeners
+			{
+				// shorten the VecDeque to a length capable of holding the data without exceeding capacity
+				// then fill the VecDeque with our new data chunk
+				let mut rchunk = self.recent_chunk.write().await;
+
+				if rchunk.len() + odata.len() <= rchunk.capacity() {
+					// we can hold this chunk without removing elements
+					rchunk.extend(&odata);
+				} else if odata.len() > rchunk.capacity() {
+					// this will extend capacity - we want to be able to hold at least the size of each chunk
+					rchunk.clear();
+					rchunk.extend(&odata);
+				} else {
+					// we must delete some elements to hold this chunk
+					let start_ind = rchunk.capacity() - odata.len();
+					let rotate_amt = rchunk.len() .min( odata.len() );
+					//trace!("**truncating back, adding to front (vd_len = {}, vd_cap = {}, odata_len = {}, start_ind = {})", curr_len, curr_capacity, odata.len(), start_ind);
+					rchunk.rotate_left(rotate_amt);
+					rchunk.resize(start_ind, 0);
+					rchunk.extend(&odata);
+				}
+
+				let chunk = rchunk.make_contiguous();
+
+
+
+				// find terminal title while we still have a contiguous chunk handle
+				let prompt_data = parse_terminal_prompt(chunk);
+				trace!("detected prompt: {:?}", prompt_data);
+				if let Some((pprompt, pprompt_end)) = prompt_data {
+					TerminalHandler::set_terminal_title(&mut lock, pprompt).unwrap();
+					prompt_tx.send(Some((pprompt.to_string(), pprompt_end))).expect("prompt_tx send not to fail");
+				} else {
+					// we can use this as a notification for if data was received or not
+					prompt_tx.send(None).expect("prompt_tx send not to fail");
+				}
 			}
+
+			
 
 			// it doesn't matter if this fails
 			if data.len() > 0 { let _ = received_tx.send(true); }
 
 			// if this is our first block of data, remove leading \r\n to prevent extra terminal line
 			// note that the prompt detection relies on leading newlines
-			if *received_tx.borrow() == false && data.starts_with(b"\r\n") {
+			if self.tty_stdout && *received_tx.borrow() == false && data.starts_with(b"\r\n") {
 				data = &data[2..];
 			}
 
 			lock.write_all(&data).unwrap();
-
-			// shouldn't /really/ matter if this fails
-			let _ = last_data_tx.send(Some(odata));
-
 			lock.flush().unwrap();
+
+			// notify listeners we have received data (and implicitly that self.recent_chunk has been updated)
+			last_data_tx.send(Some(odata)).expect("to be able to notify that we received data");
 		} else if let Message::Close(_close_msg) = msg {
 			// log to user that server as requested closing the socket?
 			// TODO: close the stream somehow by ensuring parent doesn't take more data?
@@ -365,59 +435,12 @@ impl/*<O: IsTty + Write>*/ TerminalHandler {
 	}
 
 
-	async fn handle_stdin_script(&self) -> std::io::Result<()> {
-		use std::time::Duration;
-		use tokio::io::{ BufReader, AsyncBufReadExt };
+	async fn handle_stdin_script(mut self) -> std::io::Result<()> {
 		
 		const PROMPT_TIMEOUT_FIRST: u64 = 5;
 		const PROMPT_TIMEOUT_OTHER: u64 = 5;
 
 		let tx: WsSender = self.to_websocket.clone();
-		let stdin_should_wait = self.wait_for_prompt;
-		let mut term_ready = self.last_prompt.clone();
-		let mut data_ready = self.last_data.clone();
-
-		/// Wait for the next prompt, or wait until we have not recieved data in `timeout` seconds.
-		/// Returns `true` on a found prompt.
-		async fn wait_for_prompt(timeout: u64, mut ready_condition: Either<&mut Receiver<Option<(String, bool)>>, (&str, &mut Receiver<Option<Vec<u8>>>)>) -> bool {
-			// this can be problematic of the server sends the prompt in seperate data chunks
-
-			// keep looping until `term_ready` gives us a prompt, or we haven't received data for `timeout` seconds
-			// otherwise we could try once, and have term_ready give us `None`, signaling received non-prompt data
-			loop {
-				match &mut ready_condition {
-					Either::Left(term_ready) => {
-						tokio::select! {
-							_ = tokio::time::sleep(Duration::from_secs(timeout)) => {
-								return false;
-							},
-							_ = term_ready.changed() => {
-								// wait until we have a prompt
-								if let Some((_, finished)) = *term_ready.borrow() {
-									if finished { return true; }
-								}
-							},
-						}
-					},
-					Either::Right((expected, data_ready)) => {
-						tokio::select! {
-							_ = tokio::time::sleep(Duration::from_secs(timeout)) => {
-								return false;
-							},
-							_ = data_ready.changed() => {
-								// wait until we have a prompt
-								if let Some(chunk) = data_ready.borrow().as_ref() {
-									if chunk.windows(expected.len())
-										.find(|s| s == &expected.as_bytes())
-										.is_some() { return true; }
-									//if chunk.contains(expected.as_bytes()) { return true; }
-								}
-							},
-						}
-					},
-				}
-			}
-		}
 
 		let mut stdin_lines = BufReader::new(tokio::io::stdin()).lines();
 		let mut sent_commands: usize = 0;
@@ -429,55 +452,33 @@ impl/*<O: IsTty + Write>*/ TerminalHandler {
 			// TODO: allow escape character to skip the waiting mechanism (telnet, etc)
 			trace!("stdin (piped): accepted line {:?}", line);
 
+			let (wcb, wait_cond) = ScriptWaitCondition::from_line(&line);
+
 			// if we were told to wait or this is our first command (and this line isn't "escaped")
-			if (stdin_should_wait || sent_commands == 0) && !line.starts_with('~') {
+			if (self.wait_for_prompt || sent_commands == 0) && wait_cond != ScriptWaitCondition::None {
 				// wait for the next prompt (with a timeout) before sending a chunk of data
 				let timeout = if sent_commands == 0 { PROMPT_TIMEOUT_FIRST } else { PROMPT_TIMEOUT_OTHER };
 
-				let alternative_expect: Option<&str> = if line.starts_with('`') {
-					line.char_indices()
-						.filter(|(i, _)| *i != 0) // not the first one
-						.filter(|(_, c)| *c == '`') // we are a grave
-						.filter(|(i, _)| ! line[..*i].ends_with('\\')) // previous is not a backslash
-						.map(|(i, _)| &line[1..i]) // string between the two graves
-						.next()
-				} else {
-					None
-				};
-
-				let ready_condition = alternative_expect
-					.map(|s| Either::Right((s, &mut data_ready)))
-					.unwrap_or_else(|| Either::Left(&mut term_ready));
-				
-				match ready_condition {
-					Either::Left(_) => trace!("stdin: waiting for timeout or prompt"),
-					Either::Right((ex, _)) => trace!("stdin: waiting for timeout or expect string {:?}", ex),
-				};
-
-				if ! wait_for_prompt(timeout, ready_condition).await {
+				debug!("stdin (pipe): waiting for condition `{:?}` before sending line", wait_cond);
+				if ! self.wait_for_prompt(timeout, wait_cond).await {
 					eprintln!("prompt timer timed out, stopping (waited {}s for command #{})", timeout, sent_commands);
 					timed_out = true;
 					break;
 				}
-
-				if let Some(e) = alternative_expect {
-					// remove the expected text from the data to send
-					let expect_length = 1+e.len()+1;
-					line.replace_range(0..expect_length, "");
-				}
 			}
 
 			// remove escape character, or escaped escape character
-			if line.starts_with("\\~") || line.starts_with('~') {
-				line.remove(0);
-			}
+			// remove the characters marking our wait mechanism
+			line.replace_range(..wcb, "");
+
+			// push line to server
 			line.push('\r');
 			tx.unbounded_send(Message::Text(line)).unwrap();
 			sent_commands += 1;
 		};
 
 		debug!("stdin: reached EOF - waiting for prompt (or 30s) before closing");
-		if !timed_out && !wait_for_prompt(PROMPT_TIMEOUT_OTHER, Either::Left(&mut term_ready)).await {
+		if !timed_out && !self.wait_for_prompt(PROMPT_TIMEOUT_OTHER, ScriptWaitCondition::Prompt).await {
 			// we did not time out, and we did not find a prompt after this command
 			eprintln!("unable to find console prompt after {}s - closing connection", PROMPT_TIMEOUT_OTHER);
 		}
@@ -488,10 +489,61 @@ impl/*<O: IsTty + Write>*/ TerminalHandler {
 		Ok(())
 	}
 
+	/// Wait for the next prompt, or wait until we have not recieved data in `timeout` seconds.
+	/// Returns `true` on a found prompt.
+	async fn wait_for_prompt(&mut self, timeout: u64, ready_condition: ScriptWaitCondition<'_>) -> bool {
+		// this can be problematic of the server sends the prompt in seperate data chunks
+
+		// keep looping until `term_ready` gives us a prompt, or we haven't received data for `timeout` seconds
+		// otherwise we could try once, and have term_ready give us `None`, signaling received non-prompt data
+		loop {
+			match ready_condition {
+				ScriptWaitCondition::Prompt => {
+					tokio::select! {
+						_ = tokio::time::sleep(Duration::from_secs(timeout)) => {
+							return false;
+						},
+						_ = self.last_prompt.changed() => {
+							// wait until we have a prompt
+							if let Some((_, finished)) = *self.last_prompt.borrow() {
+								if finished { return true; }
+							}
+						},
+					}
+				},
+				ScriptWaitCondition::StaticString(expected) => {
+					tokio::select! {
+						_ = tokio::time::sleep(Duration::from_secs(timeout)) => {
+							return false;
+						},
+						_ = self.last_data.changed() => {
+							
+							let chunk = self.recent_chunk.read().await;
+							let (mut chunk, chunk_2) = chunk.as_slices();
+							assert!(chunk_2.len() == 0, "make_contiguous was not previously called");
+							if chunk.len() > 128 {
+								// limit search space to try to reduce false positives
+								chunk = &chunk[chunk.len()-128..];
+							}
+
+							if log::log_enabled!(log::Level::Trace) {
+								trace!("testing for expected string {:?} within {:?} to send next line", expected, &*String::from_utf8_lossy(chunk));
+							}
+							
+							if chunk.windows(expected.len())
+								.find(|s| s == &expected.as_bytes())
+								.is_some() { return true; }
+						},
+					}
+				},
+				ScriptWaitCondition::None => return true,
+			}
+		}
+	}
+
 
 	/// Show a prompt to activate the terminal, if no prompt shows within 500ms of starting
 	async fn handle_prompt_activation(self) -> Result<(), futures::channel::mpsc::TrySendError<Message>> {
-		use std::time::Duration;
 		let ws_tx = self.to_websocket.clone();
 		let mut received = self.received_first.clone();
 		
@@ -540,7 +592,6 @@ impl/*<O: IsTty + Write>*/ TerminalHandler {
 
 /// Maps keyboard key events to a character sequence to send to a terminal.
 pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
-	//use AsciiChar::*;
 
 	const ARROW_UP: SmolStr = esc!("[A");
 	const ARROW_DOWN: SmolStr = esc!("[B");
@@ -741,31 +792,33 @@ fn truncate_string<'a>(s: &'a str, len: usize) -> Cow<'a, str> {
 	}
 }
 fn log_ws_message(msg: &Message, id_str: &str, pings: bool) {
-	match msg {
-		Message::Text(s) => {
-			let as_hex = hex::encode(s.as_bytes());
-			trace!("{} : Text : {:?} : {:?}", id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
-		},
-		Message::Binary(b) => {
-			let as_hex = hex::encode(&b);
-			let s = String::from_utf8_lossy(&b);
-			trace!("{} : Binary ({} B) : {:?} : {:?}", id_str, as_hex.len(), truncate_string(&as_hex, 10), truncate_string(&s, 10));
-		},
-		Message::Close(cf) => {
-			debug!("{} : Close{}", id_str, if let Some(c) = cf { format!(" : {:?}", c) } else { "".into() });
-		},
-		Message::Pong(b) => {
-			if pings {
+	if log::log_enabled!(log::Level::Trace) {
+		match msg {
+			Message::Text(s) => {
+				let as_hex = hex::encode(s.as_bytes());
+				trace!("{} : Text : {:?} : {:?}", id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
+			},
+			Message::Binary(b) => {
 				let as_hex = hex::encode(&b);
 				let s = String::from_utf8_lossy(&b);
-				trace!("{} : Pong : {:?} : {:?}", id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
-			}
-		},
-		Message::Ping(b) => {
-			if pings {
-				let as_hex = hex::encode(&b);
-				let s = String::from_utf8_lossy(&b);
-				trace!("{} : Ping : {:?} : {:?}", id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
+				trace!("{} : Binary ({} B) : {:?} : {:?}", id_str, as_hex.len(), truncate_string(&as_hex, 10), truncate_string(&s, 10));
+			},
+			Message::Close(cf) => {
+				debug!("{} : Close{}", id_str, if let Some(c) = cf { format!(" : {:?}", c) } else { "".into() });
+			},
+			Message::Pong(b) => {
+				if pings {
+					let as_hex = hex::encode(&b);
+					let s = String::from_utf8_lossy(&b);
+					trace!("{} : Pong : {:?} : {:?}", id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
+				}
+			},
+			Message::Ping(b) => {
+				if pings {
+					let as_hex = hex::encode(&b);
+					let s = String::from_utf8_lossy(&b);
+					trace!("{} : Ping : {:?} : {:?}", id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
+				}
 			}
 		}
 	}
