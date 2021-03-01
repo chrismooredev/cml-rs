@@ -1,19 +1,28 @@
-use clap::Clap;
-use log::{debug, error, trace, warn};
 use std::borrow::Cow;
+use clap::Clap;
+use futures::future::Either;
+use futures::stream::{SplitSink, SplitStream};
+use futures_channel::mpsc::UnboundedReceiver;
+use futures_util::{future, StreamExt};
+use log::{debug, error, trace, warn};
+use tokio_native_tls::TlsStream;
 
 use ascii::AsciiChar;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use futures_util::{future, StreamExt};
 use smol_str::SmolStr;
 
-use tokio_tungstenite::tungstenite;
+use tokio_tungstenite::{WebSocketStream, tungstenite};
 use tungstenite::error::Error as WsError;
 use tungstenite::protocol::Message;
 
 use cml::rest::Authenticate;
 use cml::rest_types as rt;
 type CmlResult<T> = Result<T, cml::rest::Error>;
+
+const CTRL_D: KeyEvent = KeyEvent {
+	code: KeyCode::Char('d'),
+	modifiers: KeyModifiers::CONTROL,
+};
 
 #[derive(Clap)]
 pub struct SubCmdOpen {
@@ -131,237 +140,6 @@ impl SubCmdOpen {
 	}
 
 	async fn open_terminal(&self, host: &str, uuid: &str) {
-		use tokio::sync::watch::{self, Sender, Receiver};
-		type WsSender = futures_channel::mpsc::UnboundedSender<Message>;
-		//type WsReceiver = futures_channel::mpsc::UnboundedReceiver<Message>;
-
-		//let received_content: Cell<bool> = Cell::new(false);
-		let (received_tx, received_rx) = watch::channel::<bool>(false);
-		let (prompt_tx, prompt_rx) = watch::channel::<Option<(String, bool)>>(None);
-		let prompt_rx_input = prompt_rx;
-
-		/// Handles interactive input over a tty, or uses stdin on non-interactive inputs.
-		///
-		/// If using stdin, this waits until a prompt is shown from `show_activate_prompt` or gives up after 5 seconds
-		async fn handle_terminal_input(tx: WsSender, stdin_should_wait: bool, term_ready: Receiver<Option<(String, bool)>>) {
-			use crossterm::event::{Event, EventStream};
-			use crossterm::tty::IsTty;
-			use crossterm::terminal;
-
-			if std::io::stdin().is_tty() {
-				debug!("stdin: is tty");
-
-				if stdin_should_wait {
-					// TODO: detect multi-line pastes and use --wait for that?
-					eprintln!("info: --wait does nothing for interactive terminals");
-				}
-
-				// Disable line buffering, local echo, etc.
-				terminal::enable_raw_mode().unwrap();
-
-				// move the sender into this scope
-				let tx = tx;
-				let tx = &tx;
-
-				// EventStream will spawn a new thread for stdin, since stdin is block-on-read
-				// stdin is the default for EventStream
-				EventStream::new()
-					.take_while(move |event| {
-						const CTRL_D: KeyEvent = KeyEvent {
-							code: KeyCode::Char('d'),
-							modifiers: KeyModifiers::CONTROL,
-						};
-						future::ready(match event {
-							Ok(Event::Key(CTRL_D)) => {
-								// print a newline since echo is disabled
-								println!("\r");
-
-								terminal::disable_raw_mode().unwrap();
-
-								tx.unbounded_send(Message::Close(None)).unwrap();
-
-								false
-							}
-							_ => true,
-						})
-					})
-					.for_each(|event_res| async move {
-						trace!("(input event) {:?}", &event_res);
-
-						match event_res {
-							Ok(event) => match event {
-								Event::Key(kevent) => match event_to_code(kevent) {
-									//Ok(c) => send(&tx, c.to_string()),
-									Ok(c) => tx.unbounded_send(Message::Text(c.to_string())).unwrap(),
-									Err(e) => warn!("unable to convert key code to sendable sequence: {}", e),
-								},
-								c @ _ => warn!("unhandled terminal event: {:?}", c),
-							},
-							Err(e) => error!("error occured from stdin: {:?}", e),
-						}
-					})
-					.await;
-			} else {
-				debug!("stdin: is not tty");
-
-				async fn handle_stdin(tx: WsSender, stdin_should_wait: bool, mut term_ready: Receiver<Option<(String, bool)>>) -> std::io::Result<()> {
-					use std::time::Duration;
-					use tokio::io::{ BufReader, AsyncBufReadExt };
-					
-					const PROMPT_TIMEOUT_FIRST: u64 = 5;
-					const PROMPT_TIMEOUT_OTHER: u64 = 5;
-
-					/// Wait for the next prompt, or wait until we have not recieved data in `timeout` seconds.
-					/// Returns `true` on a found prompt.
-					async fn wait_for_prompt(timeout: u64, term_ready: &mut Receiver<Option<(String, bool)>>) -> bool {
-						// this can be problematic of the server sends the prompt in seperate data chunks
-						
-						loop {
-							// keep looping until `term_ready` gives us a prompt, or we haven't received data for `timeout` seconds
-							// otherwise we could try once, and have term_ready give us `None`, signaling received non-prompt data
-							tokio::select! {
-								_ = tokio::time::sleep(Duration::from_secs(timeout)) => {
-									return false;
-								},
-								_ = term_ready.changed() => {
-									// wait until we have a prompt
-									if let Some((_, finished)) = *term_ready.borrow() {
-										if finished { return true; }
-									}
-								},
-							}
-						}
-					}
-
-					let mut stdin_lines = BufReader::new(tokio::io::stdin()).lines();
-					let mut sent_commands: usize = 0;
-					let mut timed_out = false;
-
-					while let Some(mut line) = stdin_lines.next_line().await? {
-						// TODO: allow escape character to skip the waiting mechanism (telnet, etc)
-						
-						// if we were told to wait or this is our first command (and this line isn't "escaped")
-						if (stdin_should_wait || sent_commands == 0) && !line.starts_with('`') {
-							// wait for the next prompt (with a timeout) before sending a chunk of data
-							let timeout = if sent_commands == 0 { PROMPT_TIMEOUT_FIRST } else { PROMPT_TIMEOUT_OTHER };
-
-							if ! wait_for_prompt(timeout, &mut term_ready).await {
-								eprintln!("prompt timer timed out, stopping (waited {}s for command #{})", timeout, sent_commands);
-								timed_out = true;
-								break;
-							}
-						}
-
-						// remove escape character, or escaped escape character
-						if line.starts_with("\\`") || line.starts_with('`') {
-							line.remove(0);
-						}
-						line.push('\r');
-						tx.unbounded_send(Message::Text(line)).unwrap();
-						sent_commands += 1;
-					};
-
-					debug!("stdin: reached EOF - waiting for prompt (or 30s) before closing");
-					if !timed_out && !wait_for_prompt(PROMPT_TIMEOUT_OTHER, &mut term_ready).await {
-						// we did not time out, and we did not find a prompt after this command
-						eprintln!("unable to find console prompt after {}s - closing connection", PROMPT_TIMEOUT_OTHER);
-					}
-
-					tx.unbounded_send(Message::Close(None)).unwrap();
-
-					// we drop the WsSender, hopefully signalling to rx that we are done
-					Ok(())
-				}
-
-				// since stdin is a blocking read, spawn it on a thread that may block
-				tokio::task::spawn_blocking(move || handle_stdin(tx, stdin_should_wait, term_ready)).await.unwrap().await.unwrap();
-			}
-
-			debug!("done processing stdin/terminal input");
-		}
-		
-		/// Accepts websocket messages from CML, and responds to pings, writes to stdout as necessary
-		/// Also sets the terminal's title, if applicable to the message.
-		async fn handle_ws_msg(ws_tx: &WsSender, message: Result<Message, WsError>, received: &Sender<bool>, prompt_tx: &&mut Sender<Option<(String, bool)>>) {
-			use std::io::Write;
-
-			let msg = message.unwrap();
-			if let Message::Ping(d) = msg {
-				trace!("responding to websocket ping (message = {:?})", String::from_utf8_lossy(&d));
-				ws_tx.unbounded_send(Message::Pong(d)).unwrap();
-			} else if let Message::Binary(data) = msg {
-				let out = std::io::stdout();
-				let mut lock = out.lock();
-				let mut data = data.as_slice();
-
-				// set terminal title
-				trace!("testing data for prompt...");
-				if let Some((pprompt, pprompt_end)) = parse_terminal_prompt(&data) {
-					trace!("parsed prompt: {:?}", pprompt);
-					SubCmdOpen::set_terminal_title(&mut lock, pprompt).unwrap();
-					prompt_tx.send(Some((pprompt.to_string(), pprompt_end))).expect("prompt_tx send not to fail");
-				} else {
-					// we can use this as a notification for if data was received or not
-					prompt_tx.send(None).expect("prompt_tx send not to fail");
-				}
-	
-				// it doesn't matter if this fails
-				if data.len() > 0 { let _ = received.send(true); }
-
-				// if this is our first block of data, remove leading \r\n to prevent extra terminal line
-				// note that the prompt detection relies on leading newlines
-				if *received.borrow() == false && data.starts_with(b"\r\n") {
-					data = &data[2..];
-				}
-
-				lock.write_all(&data).unwrap();
-				lock.flush().unwrap();
-			} else if let Message::Close(_close_msg) = msg {
-				// log to user that server as requested closing the socket?
-				// TODO: close the stream somehow by ensuring parent doesn't take more data?
-			} else {
-				eprintln!("Unexpected websocket message type: {:?}", msg);
-			}
-		}
-
-		/// Show a prompt to activate the terminal, if no prompt shows within 500ms of starting
-		async fn show_activate_prompt(ws_tx: WsSender, mut received: Receiver<bool>) -> Result<(), futures::channel::mpsc::TrySendError<Message>> {
-			use std::time::Duration;
-			
-			// reprint the current line for the prompt/currently typed line + signal to user that we are ready
-			// will also prime the prompt, if possible
-			ws_tx.unbounded_send(Message::Text(ascii::AsciiChar::FF.to_string())).unwrap();
-
-			// try 3 times to activate the terminal
-			let mut has_been_activated = false;
-			for _ in 0..3 {
-				trace!("[show_activate_prompt] sleeping for 1 secs");
-				tokio::select! {
-					_ = tokio::time::sleep(Duration::from_millis(1000)) => {
-						trace!("[show_activate_prompt] done sleeping");
-						const WAKE_STRING: &str = "\r";
-						debug!("sending {:?} to activate the console", WAKE_STRING);
-						ws_tx.unbounded_send(Message::text(WAKE_STRING))?;
-					},
-					_ = received.changed() => {
-						if *received.borrow() {
-							has_been_activated = true;
-							break;
-						}
-					}
-				}
-
-				// attempt to wait until lock is released
-				trace!("[show_activate_prompt] no content sent... waiting before sending again");
-			}
-
-			if ! has_been_activated {
-				eprintln!("If necessary, press F1 to activate console...");
-			}
-			debug!("main future 'show_activate_prompt' completed");
-			Ok(())
-		}
-
 		let (ws_stream, resp) = crate::connect_to_console(host, uuid).await.unwrap();
 
 		debug!("websocket established (HTTP status code {:?})", resp.status());
@@ -370,69 +148,391 @@ impl SubCmdOpen {
 			trace!("\t{:?}", header);
 		}
 		
+		TerminalHandler::runner(&self, ws_stream).await;
+	}
 
-		// create a channel to pipe stdin through
-		let (server_tx, server_rx) = futures_channel::mpsc::unbounded();
-		let server_tx_stdin = server_tx.clone();
-		let server_tx_pong = server_tx.clone();
-		let server_tx_init = server_tx.clone();
-		// all of our senders should be declared above
-		// when all the senders are dropped/disconnected, the server send async task will exit
-		std::mem::drop(server_tx);
+}
 
-		// will overwrite the console title based on received messages
-		SubCmdOpen::set_terminal_title(&mut std::io::stdout(), "CML Console").unwrap();
+use crossterm::tty::IsTty;
+use std::io::Write;
+use futures_util::FutureExt;
+use tokio::{net::TcpStream, sync::watch::{self, Sender, Receiver}};
+use futures_channel::mpsc::UnboundedSender;
+type WsSender = futures_channel::mpsc::UnboundedSender<Message>;
+
+#[derive(Debug, Clone)]
+struct TerminalHandler/*<O: IsTty + Write>*/ {
+	//output: O,
+	to_websocket: futures_channel::mpsc::UnboundedSender<Message>,
+	wait_for_prompt: bool,
+
+	received_first: Receiver<bool>,
+	last_prompt: Receiver<Option<(String, bool)>>,
+	last_data: Receiver<Option<Vec<u8>>>,
+}
+impl std::ops::Drop for TerminalHandler {
+	fn drop(&mut self) {
+		debug!("dropping TerminalHandler");
+	}
+}
+impl/*<O: IsTty + Write>*/ TerminalHandler {
+	async fn runner(inst: &SubCmdOpen, ws_stream: WebSocketStream<TlsStream<TcpStream>>) {
+
+		// create handler
+		// inserts receivers/terminal handles into it
 
 		// split websocket into seperate write/read streams
 		let (write, read) = ws_stream.split();
 
-		let msg_buf_to_serv = async {
-			let out = server_rx
-				.inspect(|msg| log_ws_message(msg, "send", false))
-				.map(Ok)
-				.forward(write).await;
+		let (server_tx, server_rx) = futures_channel::mpsc::unbounded();
 
-			// this is only closed once all writers are closed
-			debug!("stream 'msg_buf_to_serv' completed");
-			out
+		let (received_tx, received_rx) = watch::channel::<bool>(false);
+		let (last_data_tx, last_data_rx) = watch::channel::<Option<Vec<u8>>>(None);
+		let (prompt_tx, prompt_rx) = watch::channel::<Option<(String, bool)>>(None);
+		//let prompt_rx_input = prompt_rx;
+
+		let handler = TerminalHandler {
+			//output: todo!(),
+			to_websocket: server_tx,
+			wait_for_prompt: inst.wait,
+			received_first: received_rx,
+			last_prompt: prompt_rx,
+			last_data: last_data_rx,
 		};
 
-		let ws_content_handle = &received_tx;
-		let ws_to_stdout = async {
-			let mut prompt_tx = prompt_tx;
-			let prompt_tx = &(&mut prompt_tx);
-			read
-				.inspect(|msg| if let Ok(m) = msg { log_ws_message(m, "recv", false) })
-				.for_each(|msg| handle_ws_msg(
-					&server_tx_pong, msg,
-					ws_content_handle, prompt_tx,
-				)).await;
-			debug!("stream 'ws_to_stdout' completed");
+		// will overwrite the console title based on received messages
+		TerminalHandler::set_terminal_title(&mut std::io::stdout(), "CML Console").unwrap();
 
-			// make explicit so it isn't accidently broken
-			// this closes this instance of the sender
-			std::mem::drop(server_tx_pong);
-		};
+		// start up the four "main loops"
 
-		// I'm not familiar enough with futures to know why this would be necessary for this use case.
-		//futures_util::pin_mut!(msg_buf_to_serv, ws_to_stdout);
+		let forward_to_server = TerminalHandler::handle_to_server(server_rx, write)
+			.then(async move |r| { debug!("handler completed: forward_to_server"); r });
+		let show_activate_prompt = handler.clone().handle_prompt_activation()
+			.then(async move |r| { debug!("handler completed: show_activate_prompt"); r }); // done
+		let handle_terminal_input = handler.clone().handle_terminal_input()
+			.then(async move |r| { debug!("handler completed: handle_terminal_input"); r }); // done
+		let handle_from_server = handler.clone().handle_from_server(read, prompt_tx, last_data_tx, received_tx)
+			.then(async move |r| { debug!("handler completed: handle_from_server"); r }); // done
 
-		let (s_to_ws, (), active_prompt_res, ()) = future::join4(
-			msg_buf_to_serv,
-			ws_to_stdout,
-			show_activate_prompt(server_tx_init, received_rx),
+		std::mem::drop(handler);
 
-			// stdin is block-on-read only, but crossterm will spawn a new thread for it internally
-			handle_terminal_input(server_tx_stdin, self.wait, prompt_rx_input),
+		// wait for them all to finish
+		// note that 'forward_to_server' depends on all the others to finish first
+		let (s_to_ws, active_prompt_res, (), ()) = future::join4(
+			forward_to_server, show_activate_prompt,
+			handle_terminal_input, handle_from_server,
 		).await;
 		s_to_ws.expect("error sending stdin to CML console");
 		active_prompt_res.expect("error attempting to activate prompt");
+
+		()
+
+		// launch pieces that require the senders
+		//todo!();
+	}
+	
+	/// Handles interactive input over a tty, or uses stdin on non-interactive inputs.
+	///
+	/// If using stdin, this waits until a prompt is shown from `show_activate_prompt` or gives up after 5 seconds
+	async fn handle_terminal_input(self, /*tx: WsSender, stdin_should_wait: bool, term_ready: Receiver<Option<(String, bool)>>, data_ready: Receiver<Option<Vec<u8>>>*/) {
+		use crossterm::event::{Event, EventStream};
+		use crossterm::terminal;
+
+		if std::io::stdin().is_tty() {
+			debug!("stdin: is tty");
+
+			if self.wait_for_prompt {
+				// TODO: detect multi-line pastes and use --wait for that?
+				eprintln!("info: --wait does nothing for interactive terminals");
+			}
+
+			// Disable line buffering, local echo, etc.
+			terminal::enable_raw_mode().unwrap();
+
+			// move the sender into this scope
+			let tx = self.to_websocket.clone();
+			let tx = &tx;
+
+			// EventStream will spawn a new thread for stdin, since stdin is block-on-read
+			// stdin is the default for EventStream
+			EventStream::new()
+				.take_while(move |event| {
+					future::ready(match event {
+						Ok(Event::Key(CTRL_D)) => {
+							// print a newline since echo is disabled
+							println!("\r");
+
+							terminal::disable_raw_mode().unwrap();
+
+							tx.unbounded_send(Message::Close(None)).unwrap();
+
+							false
+						}
+						_ => true,
+					})
+				})
+				.for_each(async move |event_res| {
+					trace!("(input event) {:?}", &event_res);
+
+					match event_res {
+						Ok(event) => match event {
+							Event::Key(kevent) => match event_to_code(kevent) {
+								Ok(c) => tx.unbounded_send(Message::text(c)).unwrap(),
+								Err(e) => warn!("unable to convert key code to sendable sequence: {}", e),
+							},
+							c @ _ => warn!("unhandled terminal event, ignored: {:?}", c),
+						},
+						Err(e) => error!("error occured from stdin, ignoring: {:?}", e),
+					}
+				})
+				.await;
+		} else {
+			debug!("stdin: is not tty");
+
+			let moved_self = self.clone();
+			//let moved_self = &moved_self;
+			// since stdin is a blocking read, spawn it on a thread that may block
+			tokio::task::spawn_blocking(async move || moved_self.handle_stdin_script().await); //.await.unwrap().await.unwrap();
+		}
+	}
+	
+	async fn handle_to_server(server_rx: UnboundedReceiver<Message>, write: SplitSink<WebSocketStream<TlsStream<TcpStream>>, Message>) -> tungstenite::Result<()> {
+		let out = server_rx
+			.inspect(|msg| log_ws_message(msg, "send", false))
+			.map(Ok)
+			.forward(write).await;
+
+		// this is only closed once all writers are closed
+		out
 	}
 
-	fn set_terminal_title<T: crossterm::tty::IsTty + std::io::Write>(term: &mut T, title: &str) -> crossterm::Result<()> {
-		if term.is_tty() {
+	async fn handle_from_server(self, read: SplitStream<WebSocketStream<TlsStream<TcpStream>>>, prompt_tx: Sender<Option<(String, bool)>>, last_data_tx: Sender<Option<Vec<u8>>>, received_tx: Sender<bool>) {
+		let mut read = read;
+
+		while let Some(msg) = read.next().await {
+			if let Ok(m) = &msg { log_ws_message(m, "recv", false) }
+
+			self.handle_ws_msg(&self.to_websocket, msg,
+				&prompt_tx, &last_data_tx, &received_tx,
+			).await;
+		}
+	}
+
+	/// Accepts websocket messages from CML, and responds to pings, writes to stdout as necessary
+	/// Also sets the terminal's title, if applicable to the message.
+	async fn handle_ws_msg(&self, ws_tx: &UnboundedSender<Message>, message: Result<Message, WsError>, prompt_tx: &Sender<Option<(String, bool)>>, last_data_tx: &Sender<Option<Vec<u8>>>, received_tx: &Sender<bool>) {
+		let msg = message.unwrap();
+		if let Message::Ping(d) = msg {
+			trace!("responding to websocket ping (message = {:?})", String::from_utf8_lossy(&d));
+			ws_tx.unbounded_send(Message::Pong(d)).unwrap();
+		} else if let Message::Binary(odata) = msg {
+			let out = std::io::stdout();
+			let mut lock = out.lock();
+			let mut data = odata.as_slice();
+
+			// set terminal title
+			let prompt_data = parse_terminal_prompt(data);
+			trace!("detected prompt: {:?}", prompt_data);
+			if let Some((pprompt, pprompt_end)) = prompt_data {
+				TerminalHandler::set_terminal_title(&mut lock, pprompt).unwrap();
+				prompt_tx.send(Some((pprompt.to_string(), pprompt_end))).expect("prompt_tx send not to fail");
+			} else {
+				// we can use this as a notification for if data was received or not
+				prompt_tx.send(None).expect("prompt_tx send not to fail");
+			}
+
+			// it doesn't matter if this fails
+			if data.len() > 0 { let _ = received_tx.send(true); }
+
+			// if this is our first block of data, remove leading \r\n to prevent extra terminal line
+			// note that the prompt detection relies on leading newlines
+			if *received_tx.borrow() == false && data.starts_with(b"\r\n") {
+				data = &data[2..];
+			}
+
+			lock.write_all(&data).unwrap();
+
+			// shouldn't /really/ matter if this fails
+			let _ = last_data_tx.send(Some(odata));
+
+			lock.flush().unwrap();
+		} else if let Message::Close(_close_msg) = msg {
+			// log to user that server as requested closing the socket?
+			// TODO: close the stream somehow by ensuring parent doesn't take more data?
+		} else {
+			eprintln!("Unexpected websocket message type: {:?}", msg);
+		}
+	}
+
+
+	async fn handle_stdin_script(&self) -> std::io::Result<()> {
+		use std::time::Duration;
+		use tokio::io::{ BufReader, AsyncBufReadExt };
+		
+		const PROMPT_TIMEOUT_FIRST: u64 = 5;
+		const PROMPT_TIMEOUT_OTHER: u64 = 5;
+
+		let tx: WsSender = self.to_websocket.clone();
+		let stdin_should_wait = self.wait_for_prompt;
+		let mut term_ready = self.last_prompt.clone();
+		let mut data_ready = self.last_data.clone();
+
+		/// Wait for the next prompt, or wait until we have not recieved data in `timeout` seconds.
+		/// Returns `true` on a found prompt.
+		async fn wait_for_prompt(timeout: u64, mut ready_condition: Either<&mut Receiver<Option<(String, bool)>>, (&str, &mut Receiver<Option<Vec<u8>>>)>) -> bool {
+			// this can be problematic of the server sends the prompt in seperate data chunks
+
+			// keep looping until `term_ready` gives us a prompt, or we haven't received data for `timeout` seconds
+			// otherwise we could try once, and have term_ready give us `None`, signaling received non-prompt data
+			loop {
+				match &mut ready_condition {
+					Either::Left(term_ready) => {
+						tokio::select! {
+							_ = tokio::time::sleep(Duration::from_secs(timeout)) => {
+								return false;
+							},
+							_ = term_ready.changed() => {
+								// wait until we have a prompt
+								if let Some((_, finished)) = *term_ready.borrow() {
+									if finished { return true; }
+								}
+							},
+						}
+					},
+					Either::Right((expected, data_ready)) => {
+						tokio::select! {
+							_ = tokio::time::sleep(Duration::from_secs(timeout)) => {
+								return false;
+							},
+							_ = data_ready.changed() => {
+								// wait until we have a prompt
+								if let Some(chunk) = data_ready.borrow().as_ref() {
+									if chunk.windows(expected.len())
+										.find(|s| s == &expected.as_bytes())
+										.is_some() { return true; }
+									//if chunk.contains(expected.as_bytes()) { return true; }
+								}
+							},
+						}
+					},
+				}
+			}
+		}
+
+		let mut stdin_lines = BufReader::new(tokio::io::stdin()).lines();
+		let mut sent_commands: usize = 0;
+		let mut timed_out = false;
+
+		// note that we only check for a timeout after having something to send
+
+		while let Some(mut line) = stdin_lines.next_line().await? {
+			// TODO: allow escape character to skip the waiting mechanism (telnet, etc)
+			trace!("stdin (piped): accepted line {:?}", line);
+
+			// if we were told to wait or this is our first command (and this line isn't "escaped")
+			if (stdin_should_wait || sent_commands == 0) && !line.starts_with('~') {
+				// wait for the next prompt (with a timeout) before sending a chunk of data
+				let timeout = if sent_commands == 0 { PROMPT_TIMEOUT_FIRST } else { PROMPT_TIMEOUT_OTHER };
+
+				let alternative_expect: Option<&str> = if line.starts_with('`') {
+					line.char_indices()
+						.filter(|(i, _)| *i != 0) // not the first one
+						.filter(|(_, c)| *c == '`') // we are a grave
+						.filter(|(i, _)| ! line[..*i].ends_with('\\')) // previous is not a backslash
+						.map(|(i, _)| &line[1..i]) // string between the two graves
+						.next()
+				} else {
+					None
+				};
+
+				let ready_condition = alternative_expect
+					.map(|s| Either::Right((s, &mut data_ready)))
+					.unwrap_or_else(|| Either::Left(&mut term_ready));
+				
+				match ready_condition {
+					Either::Left(_) => trace!("stdin: waiting for timeout or prompt"),
+					Either::Right((ex, _)) => trace!("stdin: waiting for timeout or expect string {:?}", ex),
+				};
+
+				if ! wait_for_prompt(timeout, ready_condition).await {
+					eprintln!("prompt timer timed out, stopping (waited {}s for command #{})", timeout, sent_commands);
+					timed_out = true;
+					break;
+				}
+
+				if let Some(e) = alternative_expect {
+					// remove the expected text from the data to send
+					let expect_length = 1+e.len()+1;
+					line.replace_range(0..expect_length, "");
+				}
+			}
+
+			// remove escape character, or escaped escape character
+			if line.starts_with("\\~") || line.starts_with('~') {
+				line.remove(0);
+			}
+			line.push('\r');
+			tx.unbounded_send(Message::Text(line)).unwrap();
+			sent_commands += 1;
+		};
+
+		debug!("stdin: reached EOF - waiting for prompt (or 30s) before closing");
+		if !timed_out && !wait_for_prompt(PROMPT_TIMEOUT_OTHER, Either::Left(&mut term_ready)).await {
+			// we did not time out, and we did not find a prompt after this command
+			eprintln!("unable to find console prompt after {}s - closing connection", PROMPT_TIMEOUT_OTHER);
+		}
+
+		tx.unbounded_send(Message::Close(None)).unwrap();
+
+		// we drop the WsSender, hopefully signalling to rx that we are done
+		Ok(())
+	}
+
+
+	/// Show a prompt to activate the terminal, if no prompt shows within 500ms of starting
+	async fn handle_prompt_activation(self) -> Result<(), futures::channel::mpsc::TrySendError<Message>> {
+		use std::time::Duration;
+		let ws_tx = self.to_websocket.clone();
+		let mut received = self.received_first.clone();
+		
+		// reprint the current line for the prompt/currently typed line + signal to user that we are ready
+		// will also prime the prompt, if possible
+		ws_tx.unbounded_send(Message::Text(ascii::AsciiChar::FF.to_string())).unwrap();
+
+		// try 3 times to activate the terminal
+		let mut has_been_activated = false;
+		for _ in 0..3 {
+			trace!("[show_activate_prompt] sleeping for 1 secs");
+			tokio::select! {
+				_ = tokio::time::sleep(Duration::from_millis(1000)) => {
+					trace!("[show_activate_prompt] done sleeping");
+					const WAKE_STRING: &str = "\r";
+					debug!("sending {:?} to activate the console", WAKE_STRING);
+					ws_tx.unbounded_send(Message::text(WAKE_STRING))?;
+				},
+				_ = received.changed() => {
+					if *received.borrow() {
+						has_been_activated = true;
+						break;
+					}
+				}
+			}
+
+			// attempt to wait until lock is released
+			trace!("[show_activate_prompt] no content sent... waiting before sending again");
+		}
+
+		if ! has_been_activated {
+			eprintln!("If necessary, press F1 to activate console...");
+		}
+		Ok(())
+	}
+
+	/// Sets the current terminal's title, if we are interactive
+	fn set_terminal_title<O: IsTty + Write>(output: &mut O, title: &str) -> crossterm::Result<()> {
+		if output.is_tty() {
 			trace!("setting terminal title to {:?}", title);
-			crossterm::execute!(term, crossterm::terminal::SetTitle(title))?;
+			crossterm::execute!(output, crossterm::terminal::SetTitle(title))?;
 		}
 		Ok(())
 	}
@@ -619,7 +719,6 @@ fn parse_terminal_prompt<'a>(data: &'a [u8]) -> Option<(&'a str, bool)> {
 			// get first (last because .rev()) found prompt
 			.next();
 
-		trace!("detected prompt: {:?} (from data chunk {:?})", prompt, s);
 		if let Some(prompt) = prompt {
 			Some((
 				prompt, s.trim_end().ends_with(prompt)
@@ -650,7 +749,7 @@ fn log_ws_message(msg: &Message, id_str: &str, pings: bool) {
 		Message::Binary(b) => {
 			let as_hex = hex::encode(&b);
 			let s = String::from_utf8_lossy(&b);
-			trace!("{} : Binary : {:?} : {:?}", id_str, truncate_string(&as_hex, 10), truncate_string(&s, 10));
+			trace!("{} : Binary ({} B) : {:?} : {:?}", id_str, as_hex.len(), truncate_string(&as_hex, 10), truncate_string(&s, 10));
 		},
 		Message::Close(cf) => {
 			debug!("{} : Close{}", id_str, if let Some(c) = cf { format!(" : {:?}", c) } else { "".into() });
