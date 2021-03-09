@@ -20,7 +20,9 @@ This suite of Rust crates provides CLI-based utilities to make managing and auto
     * home/end/delete/ctrl-left/ctrl-right/etc
   * Pipe in multiple commands using stdin to automate terminal sessions
     * highly recommended: use --wait to wait for the next prompt between commands
-    * Prefix a line with a grave ``` ` ``` to override the --wait flag, or to not wait for a prompt before entering commands. (Enter a backslash before it to input a literal grave at the beginning of a line)
+      * Prefix a line with a tilde `~` to override the --wait flag, or to not wait for a prompt before entering commands. (Enter a backslash before it to input a literal tilde at the beginning of a line)
+      * Prefix a line with a string enclosed in graves ``` `my_string` ``` and it will wait for that string instead of a prompt (or timeout before sending)
+      * Note that this has the subtle effect of enabling line-buffering. This is used to ensure that the string above could be found. Additionally, this means that the searched string may not span multiple lines.
   * TODO: basic opt-in coloring
     * colorize prompt by (copy prompt, \r, color, print prompt, reset color on enter)
 * (TODO) `cmldiff` - Obtains the saved/running config for a device, and compares it to another device's

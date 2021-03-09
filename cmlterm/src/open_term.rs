@@ -410,16 +410,14 @@ impl TerminalHandler {
 				}
 			}
 
-			
-
-			// it doesn't matter if this fails
-			if data.len() > 0 { let _ = received_tx.send(true); }
-
 			// if this is our first block of data, remove leading \r\n to prevent extra terminal line
 			// note that the prompt detection relies on leading newlines
 			if self.tty_stdout && *received_tx.borrow() == false && data.starts_with(b"\r\n") {
 				data = &data[2..];
 			}
+
+			// it doesn't matter if this fails
+			if data.len() > 0 { let _ = received_tx.send(true); }
 
 			lock.write_all(&data).unwrap();
 			lock.flush().unwrap();
@@ -459,7 +457,7 @@ impl TerminalHandler {
 				// wait for the next prompt (with a timeout) before sending a chunk of data
 				let timeout = if sent_commands == 0 { PROMPT_TIMEOUT_FIRST } else { PROMPT_TIMEOUT_OTHER };
 
-				debug!("stdin (pipe): waiting for condition `{:?}` before sending line", wait_cond);
+				debug!("stdin (pipe): waiting for condition `{:?}` before sending line {:?}", wait_cond, &line[wcb..]);
 				if ! self.wait_for_prompt(timeout, wait_cond).await {
 					eprintln!("prompt timer timed out, stopping (waited {}s for command #{})", timeout, sent_commands);
 					timed_out = true;
@@ -759,10 +757,11 @@ fn parse_terminal_prompt<'a>(data: &'a [u8]) -> Option<(&'a str, bool)> {
 				end
 					.filter(|i| {
 						// according to ASA: must start/end with alphanumeric, middle can contain dashes
-						// IOS allows middle underscores
+						// IOS allows middle underscores, dots
+						// be more permissive than less
 						let prompt = &s[..*i];
-						prompt.starts_with(|c: char| c.is_ascii_alphanumeric()) &&
-						prompt.ends_with(|c: char| c.is_ascii_alphanumeric()) &&
+						prompt.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '.') &&
+						prompt.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '.') &&
 						s[1..i-1].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 					})
 					.map(|i| &s[..i+1])
