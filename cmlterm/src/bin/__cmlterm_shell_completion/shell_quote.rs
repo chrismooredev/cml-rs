@@ -448,7 +448,12 @@ impl<'a> InnerString<'a> {
 			InnerString::Segment(s) => {
 				match o {
 					InnerString::Segment(o) => {
-						return s.is_borrowed() == o.is_borrowed();
+						//return s.is_borrowed() == o.is_borrowed();
+						return match (s, o) {
+							(Cow::Borrowed(_), Cow::Borrowed(_)) => true,
+							(Cow::Owned(_), Cow::Owned(_)) => true,
+							_ => false,
+						};
 					},
 					_ => unreachable!(),
 				}
@@ -616,7 +621,12 @@ impl<'a> QuotedString<'a> {
 				match o {
 					Double(_) | Locale(_) => unreachable!("mismatched enum variants after checking equality"),
 					Separator(o) | Backslash(o) | Single(o) | AnsiC(o) => {
-						return s.is_borrowed() == o.is_borrowed();
+						//return s.is_borrowed() == o.is_borrowed();
+						return match (s, o) {
+							(Cow::Borrowed(_), Cow::Borrowed(_)) => true,
+							(Cow::Owned(_), Cow::Owned(_)) => true,
+							_ => false,
+						};
 					}
 				}
 			},

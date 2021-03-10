@@ -1,8 +1,3 @@
-#![feature(result_flattening)]
-#![feature(bool_to_option)]
-#![feature(drain_filter)]
-#![feature(cow_is_borrowed)]
-#![feature(map_into_keys_values)]
 
 use std::convert::TryFrom;
 use std::env::VarError;
@@ -40,7 +35,7 @@ impl CompletionError {
 
 		result
 			.map(|o| o.map(map).transpose())
-			.flatten()
+			.and_then(std::convert::identity) // .flatten()
 			.map_err(|ce| (var_name, ce))
 	}
 	fn env_var_required<'a, T, F: FnOnce(String) -> Result<T, CompletionError>>(var_name: &'a str, map: F) -> Result<T, (&'a str, CompletionError)> {
@@ -331,7 +326,17 @@ async fn get_nodes(client: &CmlUser, all: bool) -> CmlResult<Vec<(String, String
 
 fn remove_matching<S: AsRef<str>, F: Fn(&str) -> bool>(v: &mut Vec<S>, f: F) {
 	let f = &f;
-	v.drain_filter(|s| f(s.as_ref())).count();
+	// once stable - can use
+	//v.drain_filter(|s| f(s.as_ref())).count();
+
+	let mut i = 0;
+	while i != v.len() {
+		if f(v[i].as_ref()) {
+			v.remove(i);
+		} else {
+			i += 1;
+		}
+	}
 }
 
 async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
@@ -440,7 +445,7 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 				None => {
 					nodes.into_iter()
 						.map(|(id, name, _)| (id, name))
-						.map(|(id, name)| (show_ids.then_some(id), Some(name)))
+						.map(|(id, name)| (if show_ids { Some(id) } else { None }, Some(name)))
 						.flatten_tuple2()
 						.filter_map(|o| o)
 						.map(|mut s| { s.insert(0, '/'); s.push('/'); s })
@@ -475,7 +480,7 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 						//let front = String::new();
 
 						nodes.into_iter()
-							.map(|(id, name)| (show_ids.then_some(id), Some(name)))
+							.map(|(id, name)| (if show_ids { Some(id) } else { None }, Some(name)))
 							.flatten_tuple2()
 							.filter_map(|o| o)
 							// if this node matches the currently typed node string, then suggest
@@ -497,7 +502,8 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 			// cannot show unbooted nodes
 			// it would be bad to boot each and every node just for completion's sake
 			
-			let mut keys: Vec<_> = curr_keys.into_keys().collect();
+			// .into_keys() once stable
+			let mut keys: Vec<_> = curr_keys.into_iter().map(|(k, _)| k).collect();
 			keys.sort();
 			keys.into_iter()
 				.filter_matches(cword.as_ref())

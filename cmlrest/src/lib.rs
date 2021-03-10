@@ -1,4 +1,3 @@
-#![feature(str_split_once)]
 
 use clap::Clap;
 use cml::rest::{CmlUser, Error as RestError};

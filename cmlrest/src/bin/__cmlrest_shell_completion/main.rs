@@ -1,4 +1,3 @@
-#![feature(result_flattening)]
 
 use std::convert::TryFrom;
 use std::env::VarError;
@@ -23,7 +22,7 @@ impl CompletionError {
 
 		result
 			.map(|o| o.map(map).transpose())
-			.flatten()
+			.and_then(std::convert::identity) //.flatten()
 			.map_err(|ce| (var_name, ce))
 	}
 	fn env_var_required<'a, T, F: FnOnce(String) -> Result<T, CompletionError>>(var_name: &'a str, map: F) -> Result<T, (&'a str, CompletionError)> {

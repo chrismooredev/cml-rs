@@ -1,6 +1,3 @@
-#![feature(async_closure)]
-#![feature(str_split_once)]
-#![feature(try_blocks)]
 
 use clap::Clap;
 use log::trace;

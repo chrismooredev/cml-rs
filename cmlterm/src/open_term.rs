@@ -250,13 +250,13 @@ impl TerminalHandler {
 		// start up the four "main loops"
 
 		let forward_to_server = TerminalHandler::handle_to_server(server_rx, write)
-			.then(async move |r| { debug!("handler completed: forward_to_server"); r });
+			.inspect(|_| debug!("handler completed: forward_to_server"));
 		let show_activate_prompt = handler.clone().handle_prompt_activation()
-			.then(async move |r| { debug!("handler completed: show_activate_prompt"); r }); // done
+			.inspect(|_| debug!("handler completed: show_activate_prompt"));
 		let handle_terminal_input = handler.clone().handle_terminal_input()
-			.then(async move |r| { debug!("handler completed: handle_terminal_input"); r }); // done
+			.inspect(|_| debug!("handler completed: handle_terminal_input"));
 		let handle_from_server = handler.clone().handle_from_server(read, prompt_tx, last_data_tx, received_tx)
-			.then(async move |r| { debug!("handler completed: handle_from_server"); r }); // done
+			.inspect(|_| debug!("handler completed: handle_from_server"));
 
 		std::mem::drop(handler);
 
@@ -312,7 +312,7 @@ impl TerminalHandler {
 						_ => true,
 					})
 				})
-				.for_each(async move |event_res| {
+				.for_each(move |event_res| {
 					trace!("(input event) {:?}", &event_res);
 
 					match event_res {
@@ -325,6 +325,8 @@ impl TerminalHandler {
 						},
 						Err(e) => error!("error occured from stdin, ignoring: {:?}", e),
 					}
+
+					future::ready(())
 				})
 				.await;
 		} else {
@@ -333,7 +335,7 @@ impl TerminalHandler {
 			let moved_self = self.clone();
 			//let moved_self = &moved_self;
 			// since stdin is a blocking read, spawn it on a thread that may block
-			tokio::task::spawn_blocking(async move || moved_self.handle_stdin_script().await).await.unwrap().await.unwrap();
+			tokio::task::spawn_blocking(move || async { moved_self.handle_stdin_script().await }).await.unwrap().await.unwrap();
 		}
 	}
 	
@@ -642,7 +644,7 @@ pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 			// ctrl key codes
 
 			// make these "control-codes" emit as arrow keys instead
-			KeyCode::Char(ch @ ('p' | 'n' | 'f' | 'b')) => Err((match ch {
+			KeyCode::Char(ch) if matches!(ch, 'p' | 'n' | 'f' | 'b') => Err((match ch {
 				'p' => ARROW_UP,
 				'n' => ARROW_DOWN,
                 'f' => ARROW_RIGHT, // right - responds with <char at new position>

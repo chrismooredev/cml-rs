@@ -150,9 +150,7 @@ impl SubCmdExpose {
             })
 			.map(Ok)
 			.forward(ws_write)
-            .then(async move |_| {
-                trace!("WS Server <-- {} : WS write connection closed", peer_addr)
-            });
+            .inspect(|_| trace!("WS Server <-- {} : WS write connection closed", peer_addr));
 
 		futures_util::pin_mut!(serv_to_client, tcp_to_ws, ws_responder);
 		let ((), (), _ws_send_res) = future::join3(serv_to_client, tcp_to_ws, ws_responder).await;

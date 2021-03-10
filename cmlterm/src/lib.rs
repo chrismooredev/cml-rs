@@ -1,6 +1,3 @@
-#![feature(or_patterns)]
-#![feature(async_closure)]
-#![feature(option_expect_none)]
 
 use native_tls::TlsConnector;
 use tokio::net::TcpStream;
