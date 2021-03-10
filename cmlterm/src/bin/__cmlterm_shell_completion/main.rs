@@ -445,7 +445,7 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 				None => {
 					nodes.into_iter()
 						.map(|(id, name, _)| (id, name))
-						.map(|(id, name)| (if show_ids { Some(id) } else { None }, Some(name)))
+						.map(|(id, name)| (if show_ids || cword.len() >= 2 { Some(id) } else { None }, Some(name)))
 						.flatten_tuple2()
 						.filter_map(|o| o)
 						.map(|mut s| { s.insert(0, '/'); s.push('/'); s })
@@ -496,7 +496,7 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 				}
 			}
 		}
-		if show_uuids && cword.len() == 0 || cword.starts_with(char::is_alphanumeric) {
+		if (show_uuids && cword.len() == 0) || (cword.len() > 1 && cword.starts_with(char::is_alphanumeric)) {
 			// UUID
 
 			// cannot show unbooted nodes

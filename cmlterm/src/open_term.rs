@@ -28,7 +28,7 @@ use tokio_tungstenite::{WebSocketStream, tungstenite};
 use tungstenite::error::Error as WsError;
 use tungstenite::protocol::Message;
 
-use cml::rest::Authenticate;
+use cml::{rest::Authenticate, rest_types::LabTopology};
 use cml::rest_types as rt;
 type CmlResult<T> = Result<T, cml::rest::Error>;
 
@@ -68,16 +68,13 @@ impl SubCmdOpen {
 	pub async fn run(&self, auth: &Authenticate) -> CmlResult<()> {
 		// TODO: if necessary, request UUID from lab/device/line
 		let dest = &self.uuid_or_lab;
-		let mut dest_uuid = None;
 
 		let client = auth.login().await?;
 		let keys = client.keys_console(true).await?;
-		keys.iter()
-			.for_each(|(k, _)| {
-				if k == dest {
-					dest_uuid = Some(k.as_str());
-				}
-			});
+		let mut dest_uuid = keys.iter()
+			.find(|(k, _)| k == &dest)
+			.map(|(k, _)| k.as_str());
+
 		if let None = dest_uuid {
 			let split: Vec<_> = dest.split('/').collect();
 			let indiv = match split.as_slice() {
@@ -93,45 +90,78 @@ impl SubCmdOpen {
 					.map(|(id, topo_opt)| (id.to_string(), topo_opt.expect("Lab removed during exeuction. Rerun query")))
 					.collect();
 				
-				let lab = lab_topos.iter()
-					.find(|(id, topo)| id == lab_desc || topo.title == lab_desc);
+				trait NamedMatcher {
+					fn matcher_kind() -> &'static str;
+					fn id(&self) -> &str;
+					fn label(&self) -> &str;
+					fn state(&self) -> rt::State;
+					fn matches(&self, descriptor: &str) -> bool {
+						self.id() == descriptor || self.label() == descriptor
+					}
+
+					fn find_single<'a, N: NamedMatcher + Sized, I: IntoIterator<Item = N>>(s: I, desc: &'_ str) -> Result<N, String> {
+						let mut matching: Vec<N> = s.into_iter()
+							.filter(|lab_data| lab_data.matches(desc))
+							.inspect(|n| debug!("found {} matching the provided description: (id, name, state) = {:?}", N::matcher_kind(), (n.id(), n.label(), n.state())))
+							.collect();
+
+						if matching.len() == 0 {
+							Err(format!("No {} found by ID/name: {:?}", N::matcher_kind(), desc))
+						} else if matching.len() == 1 {
+							Ok(matching.remove(0))
+						} else {
+							let by_id = matching.iter()
+								.position(|n| n.id() == desc);
+
+							if let Some(res_i) = by_id {
+								debug!("Found multiple {}s for {} description {:?} - interpreting it as an ID", N::matcher_kind(), N::matcher_kind(), desc);
+								Ok(matching.remove(res_i))
+							} else {
+								let mut s = String::new();
+								s += &format!("Found multiple {}s by that description: please reference one by ID, or give them unique names.\n", N::matcher_kind());
+								matching.iter().for_each(|n| {
+									s += &format!("\t ID = {}, title = {:?} (state: {})\n", n.id(), n.label(), n.state());
+								});
+								Err(s)
+							}
+						}
+					}
+				}
+				impl NamedMatcher for (String, LabTopology) {
+					fn matcher_kind() -> &'static str { "lab" }
+					fn id(&self) -> &str { &self.0 }
+					fn label(&self) -> &str { &self.1.title }
+					fn state(&self) -> rt::State { self.1.state }
+				}
+				impl NamedMatcher for rt::labeled::Data<rt::NodeDescription> {
+					fn matcher_kind() -> &'static str { "node" }
+					fn id(&self) -> &str { &self.id }
+					fn label(&self) -> &str { &self.data.label }
+					fn state(&self) -> rt::State { self.data.state }
+				}
 				
-				let (lab_id, lab_topo) = match lab {
-					Some(l) => l,
-					None => {
-						eprintln!("No lab found by ID/name: {:?}", lab_desc);
-						return Ok(()); // TODO: process exit code?
+				let (lab_id, lab_topo) = match <(String, LabTopology)>::find_single(lab_topos, lab_desc) {
+					Ok(d) => d,
+					Err(msg) => {
+						eprint!("{}", msg);
+						return Ok(());
 					}
 				};
-
-				if lab_topo.state.inactive() && ! self.boot {
-					eprintln!("Lab not active, and boot flag was not passed. Exiting.");
-					return Ok(());
-				}
-
-				let node = lab_topo.nodes.iter()
-					.find(|node| node.id == node_desc || node.data.label == node_desc);
-				
-				let (node_id, node_data) = match node {
-					Some(n) => (&n.id, &n.data),
-					None => {
-						eprintln!("No node found in specified lab by ID/name: {:?}", node_desc);
+				let (node_id, node_data) = match <rt::labeled::Data<rt::NodeDescription>>::find_single(lab_topo.nodes, node_desc) {
+					Ok(d) => (d.id, d.data),
+					Err(msg) => {
+						eprint!("{}", msg);
 						return Ok(());
 					}
 				};
 
-				if node_data.state.inactive() && ! self.boot {
-					eprintln!("Node not active, and boot flag was not passed. Exiting.");
-					return Ok(());
-				}
+				trace!("chosen lab {{ id = {}, state = {:?} }}", lab_id, lab_topo.state);
 
-				if node_data.state.inactive() && self.boot {
-					// when doing so, run `GET /labs/{lab_id}/nodes/{node_id}/keys/console?line=0`
-					todo!("boot up node before trying to get console key");
-				}
+
+				trace!("node {{ id = {:?}, state = {:?} }}", node_id, node_data.state);
 
 				let k = keys.iter()
-					.find(|(_, meta)| &meta.lab_id == lab_id && &meta.node_id == node_id && meta.line == line);
+					.find(|(_, meta)| meta.lab_id == lab_id && meta.node_id == node_id && meta.line == line);
 			
 				match k {
 					Some((uuid, _)) => dest_uuid = Some(uuid),
