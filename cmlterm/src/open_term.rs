@@ -770,36 +770,38 @@ pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {
 // returns the parsed prompt, and if the prompt is the last segment in the data (except for whitespace)
 fn parse_terminal_prompt<'a>(data: &'a [u8]) -> Option<(&'a str, bool)> {
 	if let Ok(s) = std::str::from_utf8(data) {
-		let prompt = s.char_indices()
-			// find last if possible
-			.rev() 
-			// start going from starts of lines
-			.filter(|&(_, c)| c == '\r' || c == '\n') 
-			// trim starting whitespace, trim at 64+2 chars:
-			// hostnames cannot be bigger than 64, plus 2 for prompt character
-			.map(|(i, _)| {
-				let s = s[i..].trim_start();
-				// trim to 64 chars + 2 (only need 1?) for prompt character
-				let end = s.len().min(64+2);
-				&s[..end]
-			}) 
-			.filter_map(|s| {
-				// IOS+Linux prompts
-				let end = s.find(|c| c == '#' || c == '>' || c == '$');
-				end
-					.filter(|i| {
-						// according to ASA: must start/end with alphanumeric, middle can contain dashes
-						// IOS allows middle underscores, dots
-						// be more permissive than less
-						let prompt = &s[..*i];
-						prompt.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '.') &&
-						prompt.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '.') &&
-						s[1..i-1].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-					})
-					.map(|i| &s[..i+1])
+		let prompt = s.lines()
+
+			// get the last non-empty string
+			.map(|s| s.trim())
+			.filter_map(|s| if s.len() > 0 { Some(s) } else { None })
+			.last()
+
+			// if there is a prompt inside, extract it
+			.map::<Option<&str>, _>(|s| {
+				// go until next '#', '>', '$'
+				
+				// IOS+ASA+Linux prompts
+				let end = s.find(|c| c == '#' || c == '>' || c == '$')?;
+
+				// prompts/hostnames should not be over 64 chars
+				if end > 64 { return None; }
+
+				Some(&s[..=end])
 			})
-			// get first (last because .rev()) found prompt
-			.next();
+			.flatten()
+
+			// validate it as a proper hostname
+			.filter(|s| {
+				let prompt = &s[1..s.len()-1];
+				// according to ASA: must start/end with alphanumeric, middle can contain dashes
+				// IOS allows middle underscores, dots
+				// be more permissive than less
+				// also allow parens, to support config prompts like firewall(config)#
+				prompt.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '.') &&
+				prompt.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '.' || c == ')') &&
+				prompt[1..prompt.len()-1].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '(')
+			});
 
 		if let Some(prompt) = prompt {
 			Some((

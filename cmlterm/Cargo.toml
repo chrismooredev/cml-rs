@@ -1,6 +1,6 @@
 [package]
 name = "cmlterm"
-version = "0.4.2"
+version = "0.4.3"
 authors = ["Chris Moore <35407569+csm123199@users.noreply.github.com>"]
 edition = "2018"
 
