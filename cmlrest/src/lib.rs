@@ -4,6 +4,7 @@ use cml::rest::{CmlUser, Error as RestError};
 use serde_json::Value;
 
 #[derive(Clap)]
+#[clap(version=clap::crate_version!())]
 pub struct Args {
 	/// Emit the raw JSON response
 	#[clap(short)]

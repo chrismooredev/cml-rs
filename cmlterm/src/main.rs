@@ -9,7 +9,7 @@ use cmlterm::listing::SubCmdList;
 use cmlterm::open_term::SubCmdOpen;
 
 #[derive(Clap)]
-#[clap(version = "0.1.0", author = "Chris M. <35407569+csm123199@users.noreply.github.com>")]
+#[clap(version = clap::crate_version!(), author = "Chris M. <35407569+csm123199@users.noreply.github.com>")]
 struct Args {
 	#[clap(subcommand)]
 	subc: SubCmd,
