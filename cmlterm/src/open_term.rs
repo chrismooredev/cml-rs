@@ -793,6 +793,7 @@ fn parse_terminal_prompt<'a>(data: &'a [u8]) -> Option<(&'a str, bool)> {
 
 			// validate it as a proper hostname
 			.filter(|s| {
+				if s.len() < 3 { return false; }
 				let prompt = &s[1..s.len()-1];
 				// according to ASA: must start/end with alphanumeric, middle can contain dashes
 				// IOS allows middle underscores, dots
