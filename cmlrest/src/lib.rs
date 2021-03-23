@@ -21,6 +21,7 @@ impl Args {
 		match &self.rootsubcmd {
 			SubCmdRoot::Test => testing(&self, &client).await,
 			SubCmdRoot::Get(g) => g.handle(&self, &client).await,
+			SubCmdRoot::Raw(g) => g.handle(&self, &client).await,
 		}
 	}
 }
@@ -29,6 +30,7 @@ impl Args {
 pub enum SubCmdRoot {
 	Test,
 	Get(SubCmdGet),
+	Raw(SubCmdRaw),
 }
 
 #[derive(Clap)]
@@ -65,6 +67,77 @@ impl SubCmdGet {
 						}
 					},
 				}
+			}
+		}
+
+		Ok(())
+	}
+}
+
+use clap::ArgEnum;
+#[derive(ArgEnum)]
+enum HttpMethod {
+	GET,
+	PUT,
+}
+
+impl ::std::str::FromStr for HttpMethod {
+	type Err = String;
+
+	fn from_str(s: &str) -> ::std::result::Result<Self,Self::Err> {
+		// roughly equivalent to clap 2.33.3 ArgEnum derive impl
+		
+		#[allow(deprecated, unused_imports)]
+		use ::std::ascii::AsciiExt;
+		if s.eq_ignore_ascii_case("GET") {
+			Ok(Self::GET)
+		} else if s.eq_ignore_ascii_case("PUT") {
+			Ok(Self::PUT)
+		} else {
+			Err(format!("valid values: {}", ["get", "put"].join(", ")))
+		}
+	}
+}
+
+
+#[derive(Clap)]
+pub struct SubCmdRaw {
+	#[clap(case_insensitive=true)]
+	method: HttpMethod,
+	path: String,
+}
+impl SubCmdRaw {
+	async fn handle(&self, args: &Args, client: &CmlUser) -> Result<(), RestError> {
+		let rresp = match self.method {
+			HttpMethod::GET => {
+				// make request, print to stdout
+				let resp = cml::rest::raw::get_v0(client, self.path.clone())
+					.send().await?;
+				
+				cml::rest::RawApiResponse::extract(resp).await?
+			},
+			HttpMethod::PUT => {
+				use tokio::io::AsyncReadExt;
+
+				// make request, pipe stdin to request, print to stdout
+				let mut stdin = tokio::io::stdin();
+				let mut buf = Vec::with_capacity(1024);
+				stdin.read_to_end(&mut buf).await?;
+				
+				let resp = cml::rest::raw::put_v0(client, self.path.clone())
+					.body(buf)
+					.send().await?;
+				
+				cml::rest::RawApiResponse::extract(resp).await?
+			},
+		};
+
+		match rresp {
+			(200, val) => {
+				println!("{}", val.as_string());
+			},
+			(_, val) => {
+				eprintln!("{}", val.as_string());
 			}
 		}
 

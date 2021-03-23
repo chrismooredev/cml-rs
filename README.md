@@ -11,7 +11,8 @@ This suite of Rust crates provides CLI-based utilities to make managing and auto
   * WIP: bash commandline completion for REST endpoints
 * `cmlrest` - A command-line interface to CML's REST API
   * Supports outputting human-formatted, or JSON data
-* `cmlterm` - A command-line terminal for CML
+* [`cmlterm` - A command-line terminal for CML](https://github.com/csm123199/cml-rs/tree/main/cmlterm)
+  * View [`cmlterm`'s main page](https://github.com/csm123199/cml-rs/tree/main/cmlterm) for specific installation/usage instructions
   * Allows entering a device directly without an intermediary shell
   * WIP: bash commandline completion for lab/device IDs/names
     * does not currently support double-quoted completions, or those with variables

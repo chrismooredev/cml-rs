@@ -1,4 +1,5 @@
 
+use thiserror::Error;
 use native_tls::TlsConnector;
 use tokio::net::TcpStream;
 use tokio_native_tls::native_tls;
@@ -19,7 +20,23 @@ macro_rules! esc {
 
 pub mod expose;
 pub mod listing;
+pub mod api;
+pub mod terminal;
 pub mod open_term;
+
+#[derive(Debug, Error)]
+pub enum TerminalError {
+	#[error("An error occured invoking the CML Rest API")]
+	Cml(#[from] cml::rest::Error),
+	#[error("Bad command line usage")]
+	BadUsage,
+	#[error("Unable to find the node within the lab")]
+	BadDeviceQuery(#[from] terminal::NodeSearchError),
+	#[error("Line not found on resolved node")]
+	BadLineQuery(#[from] terminal::ConsoleSearchError),
+	#[error("Completions script not available for {}", .0)]
+	UnsupportedCompletionShell(String),
+}
 
 /// Connects to the given console UUID using secured websockets (accepting invalid/self-signed certificates).
 ///

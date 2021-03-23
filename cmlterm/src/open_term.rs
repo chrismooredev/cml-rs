@@ -31,6 +31,9 @@ use tungstenite::protocol::Message;
 use cml::{rest::Authenticate, rest_types::LabTopology};
 use cml::rest_types as rt;
 type CmlResult<T> = Result<T, cml::rest::Error>;
+use crate::api::ScriptWaitCondition;
+use crate::terminal::{NodeCtx, ConsoleCtx};
+use crate::TerminalError;
 
 
 type WsSender = futures_channel::mpsc::UnboundedSender<Message>;
@@ -65,111 +68,44 @@ pub struct SubCmdOpen {
 	uuid_or_lab: String,
 }
 impl SubCmdOpen {
-	pub async fn run(&self, auth: &Authenticate) -> CmlResult<()> {
+	pub async fn run(&self, auth: &Authenticate) -> Result<(), TerminalError> {
 		// TODO: if necessary, request UUID from lab/device/line
 		let dest = &self.uuid_or_lab;
 
 		let client = auth.login().await?;
 		let keys = client.keys_console(true).await?;
+
+		// find by UUID
 		let mut dest_uuid = keys.iter()
 			.find(|(k, _)| k == &dest)
 			.map(|(k, _)| k.as_str());
 
+		// find by split names
 		if let None = dest_uuid {
 			let split: Vec<_> = dest.split('/').collect();
 			let indiv = match split.as_slice() {
-				&["", lab, node] => Some((lab, node, "0")),
-				&["", lab, node, line] => Some((lab, node, line)),
+				&["", lab, node] => Some((lab, node, None)),
+				&["", lab, node, line] => Some((lab, node, Some(line))),
 				_ => None,
 			};
+
 			if let Some((lab_desc, node_desc, line)) = indiv {
-				let line: u64 = line.parse().expect("Unable to parse line as number");
-				let lab_ids = client.labs(true).await?;
-				let lab_topos: Vec<(String, rt::LabTopology)> = client.lab_topologies(&lab_ids, false).await?
-					.into_iter()
-					.map(|(id, topo_opt)| (id.to_string(), topo_opt.expect("Lab removed during exeuction. Rerun query")))
-					.collect();
+				let node = NodeCtx::search(&client, lab_desc, node_desc).await?;
 				
-				trait NamedMatcher {
-					fn matcher_kind() -> &'static str;
-					fn id(&self) -> &str;
-					fn label(&self) -> &str;
-					fn state(&self) -> rt::State;
-					fn matches(&self, descriptor: &str) -> bool {
-						self.id() == descriptor || self.label() == descriptor
-					}
-
-					fn find_single<'a, N: NamedMatcher + Sized, I: IntoIterator<Item = N>>(s: I, desc: &'_ str) -> Result<N, String> {
-						let mut matching: Vec<N> = s.into_iter()
-							.filter(|lab_data| lab_data.matches(desc))
-							.inspect(|n| debug!("found {} matching the provided description: (id, name, state) = {:?}", N::matcher_kind(), (n.id(), n.label(), n.state())))
-							.collect();
-
-						if matching.len() == 0 {
-							Err(format!("No {} found by ID/name: {:?}", N::matcher_kind(), desc))
-						} else if matching.len() == 1 {
-							Ok(matching.remove(0))
-						} else {
-							let by_id = matching.iter()
-								.position(|n| n.id() == desc);
-
-							if let Some(res_i) = by_id {
-								debug!("Found multiple {}s for {} description {:?} - interpreting it as an ID", N::matcher_kind(), N::matcher_kind(), desc);
-								Ok(matching.remove(res_i))
-							} else {
-								let mut s = String::new();
-								s += &format!("Found multiple {}s by that description: please reference one by ID, or give them unique names.\n", N::matcher_kind());
-								matching.iter().for_each(|n| {
-									s += &format!("\t ID = {}, title = {:?} (state: {})\n", n.id(), n.label(), n.state());
-								});
-								Err(s)
-							}
-						}
-					}
-				}
-				impl NamedMatcher for (String, LabTopology) {
-					fn matcher_kind() -> &'static str { "lab" }
-					fn id(&self) -> &str { &self.0 }
-					fn label(&self) -> &str { &self.1.title }
-					fn state(&self) -> rt::State { self.1.state }
-				}
-				impl NamedMatcher for rt::labeled::Data<rt::NodeDescription> {
-					fn matcher_kind() -> &'static str { "node" }
-					fn id(&self) -> &str { &self.id }
-					fn label(&self) -> &str { &self.data.label }
-					fn state(&self) -> rt::State { self.data.state }
-				}
-				
-				let (lab_id, lab_topo) = match <(String, LabTopology)>::find_single(lab_topos, lab_desc) {
-					Ok(d) => d,
-					Err(msg) => {
-						eprint!("{}", msg);
-						return Ok(());
-					}
-				};
-				let (node_id, node_data) = match <rt::labeled::Data<rt::NodeDescription>>::find_single(lab_topo.nodes, node_desc) {
-					Ok(d) => (d.id, d.data),
-					Err(msg) => {
-						eprint!("{}", msg);
-						return Ok(());
-					}
+				let node: NodeCtx = match node {
+					Ok(nc) => nc,
+					Err(nse) => return Err(nse.into()),
 				};
 
-				trace!("chosen lab {{ id = {}, state = {:?} }}", lab_id, lab_topo.state);
+				let line: Option<u64> = line.map(|s| s.parse().expect("Unable to parse line as number"));
+				let console = node.resolve_line(&client, line, Some(&keys)).await?;
 
+				let console: ConsoleCtx = match console {
+					Ok(cc) => cc,
+					Err(cse) => return Err(cse.into()),
+				};
 
-				trace!("node {{ id = {:?}, state = {:?} }}", node_id, node_data.state);
-
-				let k = keys.iter()
-					.find(|(_, meta)| meta.lab_id == lab_id && meta.node_id == node_id && meta.line == line);
-			
-				match k {
-					Some((uuid, _)) => dest_uuid = Some(uuid),
-					None => {
-						eprintln!("Unable to find key for specified device. Exiting.");
-						return Ok(());
-					}
-				}
+				dest_uuid = Some(keys.get_key_value(console.uuid()).unwrap().0.as_ref());
 			}
 		}
 
@@ -197,37 +133,22 @@ impl SubCmdOpen {
 		
 		TerminalHandler::runner(&self, ws_stream).await;
 	}
-
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ScriptWaitCondition<'a> {
-	Prompt,
-	None,
-	StaticString(&'a str),
-}
-impl<'a> ScriptWaitCondition<'a> {
-	fn from_line(line: &'a str) -> (usize, ScriptWaitCondition<'a>) {
-		if line.starts_with("\\~") || line.starts_with("\\`") {
-			(1, ScriptWaitCondition::Prompt)
-		} else if line.starts_with('~') {
-			(1, ScriptWaitCondition::None)
-		} else if line.starts_with('`') {
-			line.char_indices()
-				.filter(|(i, _)| *i != 0) // not the first one
-				.filter(|(_, c)| *c == '`') // we are a grave
-				.filter(|(i, _)| ! line[..*i].ends_with('\\')) // previous is not a backslash
-				.map(|(i, _)| &line[1..i]) // string between the two graves
-				.next()
-				.map(|l| (2+l.len(), ScriptWaitCondition::StaticString(l)))
-				.unwrap_or((0, ScriptWaitCondition::Prompt))
-		} else {
-			(0, ScriptWaitCondition::Prompt)
-		}
-	}
 }
 
 const CACHE_CAPACITY: usize = 256;
+
+#[derive(Debug, Clone)]
+struct TtyTerminal {
+	tty_stdin: bool,
+	tty_stdout: bool,
+}
+
+/*
+#[derive(Debug, Clone)]
+struct ScriptTerminal {
+
+}
+*/
 
 #[derive(Debug, Clone)]
 struct TerminalHandler {
@@ -428,8 +349,6 @@ impl TerminalHandler {
 
 				let chunk = rchunk.make_contiguous();
 
-
-
 				// find terminal title while we still have a contiguous chunk handle
 				let prompt_data = parse_terminal_prompt(chunk);
 				trace!("detected prompt: {:?}", prompt_data);
@@ -482,7 +401,7 @@ impl TerminalHandler {
 			// TODO: allow escape character to skip the waiting mechanism (telnet, etc)
 			trace!("stdin (piped): accepted line {:?}", line);
 
-			let (wcb, wait_cond) = ScriptWaitCondition::from_line(&line);
+			let (wcb, wait_cond) = ScriptWaitCondition::from_line(line.as_str());
 
 			// if we were told to wait or this is our first command (and this line isn't "escaped")
 			if (self.wait_for_prompt || sent_commands == 0) && wait_cond != ScriptWaitCondition::None {
@@ -521,7 +440,7 @@ impl TerminalHandler {
 
 	/// Wait for the next prompt, or wait until we have not recieved data in `timeout` seconds.
 	/// Returns `true` on a found prompt.
-	async fn wait_for_prompt(&mut self, timeout: u64, ready_condition: ScriptWaitCondition<'_>) -> bool {
+	async fn wait_for_prompt(&mut self, timeout: u64, ready_condition: ScriptWaitCondition<&str>) -> bool {
 		// this can be problematic of the server sends the prompt in seperate data chunks
 
 		// keep looping until `term_ready` gives us a prompt, or we haven't received data for `timeout` seconds

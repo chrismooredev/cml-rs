@@ -41,16 +41,14 @@ Uses three environment variables:
 Pre-built binaries are not currently provided on Github.
 * If Rust is not yet installed, first install the Rust toolchain: https://rustup.rs/
 * `cmlterm` can then be installed with:
-	* `cargo install cmlterm --git https://github.com/csm123199/cml-rs --branch main`
+```
+cargo install cmlterm --git https://github.com/csm123199/cml-rs --branch main
+```
 
 For bash autocompletion, you can execute the completion wrapper in your shell. To insert the latest to your .bashrc:
-* First find your downloaded completion wrapper. It will be somewhere in
-```
-~/.cargo/git/checkouts/cml-rs-***/***/cmlterm/__cmlterm_completion_wrapper.sh
-```
 Then add a `source` it in your .bashrc, if you want to run it for every shell
 ```
-echo 'source "<completion wrapper path>" >> .bashrc
+echo 'source <(cmlterm --completions bash)' >> .bashrc
 ```
 
 ## Basic scripting

@@ -1,39 +1,28 @@
+use std::borrow::Cow;
 use reqwest::{header::HeaderMap, Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Write};
 use thiserror::Error;
 
 use rt::SimpleNode;
 type RResult<T> = Result<T, CmlError>;
 pub use CmlError as Error;
 
-#[derive(Error, Debug)]
+#[derive(Debug, Error)]
 pub enum CmlError {
+	#[error("stdio error")]
+	Io(#[from] std::io::Error),
 	#[error("network error")]
-	Network(reqwest::Error),
+	Network(#[from] reqwest::Error),
 	#[error("bad response from CML REST API")]
-	Response(ApiError),
+	Response(#[from] ApiError),
 	#[error("error decoding JSON response")]
-	Serialization(serde_json::Error),
-}
-impl From<reqwest::Error> for CmlError {
-	fn from(e: reqwest::Error) -> CmlError {
-		CmlError::Network(e)
-	}
-}
-impl From<ApiError> for CmlError {
-	fn from(e: ApiError) -> CmlError {
-		CmlError::Response(e)
-	}
-}
-impl From<serde_json::Error> for CmlError {
-	fn from(e: serde_json::Error) -> CmlError {
-		CmlError::Serialization(e)
-	}
+	Serialization(#[from] serde_json::Error),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
+#[error("There was an error invoking the CML REST API for {}", endpoint)]
 pub struct ApiError {
 	endpoint: String,
 	error_type: ApiErrorType,
@@ -69,7 +58,7 @@ impl ApiErrorType {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum RawApiResponse {
+pub enum RawApiResponse {
 	None,
 	PlainText(String),
 	Json(Value),
@@ -89,7 +78,7 @@ enum RawApiResponse {
 	}
 }*/
 impl RawApiResponse {
-	async fn extract(resp: Response) -> RResult<(u16, RawApiResponse)> {
+	pub async fn extract(resp: Response) -> RResult<(u16, RawApiResponse)> {
 		let endpoint = resp.url().path().to_string();
 		let status = resp.status().as_u16();
 		if resp.content_length().expect("CML to respond with a Content-Length header") == 0 {
@@ -117,15 +106,22 @@ impl RawApiResponse {
 								)
 								.map_err(|e| ApiError::new(endpoint, ApiErrorType::JsonDecode(text, e)).into())*/
 					}
-                        ct @ _ => Err(ApiError::new(
-                            endpoint,
-                            ApiErrorType::unknown(format!("unknown content-type: `{}`", ct)),
-                        ))?,
+					ct @ _ => Err(ApiError::new(
+						endpoint,
+						ApiErrorType::unknown(format!("unknown content-type: `{}`", ct)),
+					))?,
 				}
 			}
 		}
 	}
 }
+	pub fn as_string(&self) -> Cow<'_, str> {
+		match self {
+			RawApiResponse::None => Cow::from(""),
+			RawApiResponse::PlainText(s) => Cow::from(s),
+			RawApiResponse::Json(v) => Cow::from(v.to_string()),
+		}
+	}
 }
 
 fn get_cml_client(token: Option<&str>) -> RResult<Client> {
@@ -159,6 +155,38 @@ pub struct CmlUser {
 }
 
 use crate::rest_types as rt;
+
+#[cfg(feature="untyped_requests")]
+pub mod raw {
+	use super::CmlUser;
+
+	/// Sets up an authenticated GET request to the CML rest server (version 0).
+	#[allow(unused)]
+	pub fn get_v0<D: std::fmt::Display>(user: &CmlUser, endpoint: D) -> reqwest::RequestBuilder {
+		let as_string = endpoint.to_string();
+		let mut as_str: &str = &as_string;
+		if as_str.starts_with('/') {
+			as_str = &as_str[1..];
+		}
+		user.get_v0(as_str)
+	}
+
+	/// Sets up an authenticated PUT request to the CML rest server (version 0).
+	///
+	/// Data must be passed into the resulting object before the request is sent.
+	#[allow(unused)]
+	pub fn put_v0<D: std::fmt::Display>(user: &CmlUser, endpoint: D) -> reqwest::RequestBuilder {
+		let as_string = endpoint.to_string();
+		let mut as_str: &str = &as_string;
+		if as_str.starts_with('/') {
+			as_str = &as_str[1..];
+		}
+		user.put_v0(endpoint)
+	}
+}
+
+// TODO: impl a from_format that special cases "https://{}/{}?{}#{}", etc without allocating
+
 impl CmlUser {
 	fn get_v0<D: std::fmt::Display>(&self, endpoint: D) -> reqwest::RequestBuilder {
 		self.client.get(format!("https://{}/api/v0/{}", self.host, endpoint).as_str())
@@ -167,8 +195,14 @@ impl CmlUser {
 		self.client.put(format!("https://{}/api/v0/{}", self.host, endpoint).as_str())
 	}
 
+	pub fn host(&self) -> &str {
+		&self.host
+	}
 	pub fn username(&self) -> &str {
 		&self.username
+	}
+	pub fn roles(&self) -> Vec<&str> {
+		self.roles.iter().map(|s| s.as_str()).collect()
 	}
 
 	/// Get a list of labs visible to the user.
@@ -299,6 +333,8 @@ impl CmlUser {
 	}
 
 	pub async fn lab_topologies<'b, I: IntoIterator<Item = &'b S>, S: AsRef<str> + 'b>(&'_ self, lab_ids: I, include_configurations: bool) -> RResult<Vec<(&'b str, Option<rt::LabTopology>)>> {
+		// TODO: change this to return a HashMap, that skips missing topologies?
+		
 		async fn get_topo<'a>(client: &'_ CmlUser, s: &'a str, configs: bool) -> RResult<(&'a str, Option<rt::LabTopology>)> {
 			let topo = client.lab_topology(s, configs).await?;
 			Ok((s, topo))

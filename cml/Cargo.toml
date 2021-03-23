@@ -13,4 +13,13 @@ serde = { version = "1.0.120", features = ["derive"] }
 serde_json = "1.0.61"
 thiserror = "1.0.23"
 futures = "0.3.12"
+serde_with = "1.6.4"
+strum = "0.20.0"
+schemars = { version = "0.8.0", optional = true }
+
+[features]
+default = []
+
+# Exposes module rest::raw, which contains methods to create authenticated requests to a CML REST API instance
+untyped_requests = []
 

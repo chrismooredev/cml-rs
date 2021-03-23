@@ -284,7 +284,7 @@ impl CompletionVars {
 
 
 async fn get_nodes(client: &CmlUser, all: bool) -> CmlResult<Vec<(String, String, Vec<(String, String)>)>> {
-	async fn lab_data(client: &CmlUser, id: String, all: bool, valid_node_types: &[String]) -> CmlResult<Option<(String, String, Vec<(String, String)>)>> {
+	async fn lab_data(client: &CmlUser, id: String, all: bool, valid_node_types: &[rt::NodeDefinition]) -> CmlResult<Option<(String, String, Vec<(String, String)>)>> {
 		match client.lab_topology(&id, false).await? {
 			None => Ok(None),
 			Some(t) => {
@@ -308,10 +308,7 @@ async fn get_nodes(client: &CmlUser, all: bool) -> CmlResult<Vec<(String, String
 	let (lab_list, node_defs) = futures::future::join(lab_list, node_defs).await;
 	let (lab_list, node_defs): (Vec<String>, Vec<rt::SimpleNodeDefinition>) = (lab_list?, node_defs?);
 
-	let device_defs_with_consoles: Vec<String> = node_defs.into_iter()
-		.filter(|nd| nd.data.sim.console)
-		.map(|nd| nd.id)
-		.collect();
+	let device_defs_with_consoles: Vec<rt::NodeDefinition> = cml::utils::node_definitions_with_consoles(&node_defs);
 
 	let lab_topos_futs: Vec<_> = lab_list.into_iter()
 		.map(|lid| lab_data(client, lid, all, &device_defs_with_consoles))

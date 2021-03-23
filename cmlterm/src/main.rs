@@ -2,8 +2,7 @@
 use clap::Clap;
 use log::trace;
 
-type CmlResult<T> = Result<T, cml::rest::Error>;
-
+use cmlterm::TerminalError;
 use cmlterm::expose::SubCmdExpose;
 use cmlterm::listing::SubCmdList;
 use cmlterm::open_term::SubCmdOpen;
@@ -11,8 +10,12 @@ use cmlterm::open_term::SubCmdOpen;
 #[derive(Clap)]
 #[clap(version = clap::crate_version!(), author = "Chris M. <35407569+csm123199@users.noreply.github.com>")]
 struct Args {
+	/// Emit a source-able completions script for the specified shell.
+	#[clap(long)]
+	completions: Option<String>,
+
 	#[clap(subcommand)]
-	subc: SubCmd,
+	subc: Option<SubCmd>,
 }
 
 #[derive(Clap)]
@@ -29,70 +32,48 @@ struct SubCmdRun {
 	cmds: Vec<String>,
 }
 
-#[tokio::main]
-async fn main() -> CmlResult<()> {
+async fn application() -> anyhow::Result<()> {
 	env_logger::init();
 
 	trace!("parsing args");
 	// can eventually 'execve ssh' ?
 	let args = Args::parse();
 
+	if let Some(shell) = args.completions {
+		let script: &str = match shell.to_lowercase().as_str() {
+			"bash" => include_str!("../__cmlterm_completion_wrapper.sh"),
+			_ => anyhow::bail!(TerminalError::UnsupportedCompletionShell(shell)),
+		};
+		
+		print!("{}", script);
+		return Ok(());
+	}
+
+	if args.subc.is_none() {
+		use clap::IntoApp;
+		use std::io;
+
+		let mut app = Args::into_app();
+		let mut out = io::stdout();
+		app.write_help(&mut out).expect("failed to write to stdout");
+		return Ok(());
+	}
+
 	let auth = cml::get_auth_env().expect("Unable to get authentication info from environment");
 
-	match &args.subc {
+	match &args.subc.unwrap() {
 		SubCmd::List(list) => list.run(&auth).await?,
 		SubCmd::Open(open) => open.run(&auth).await?,
-		SubCmd::Run(_run) => {
-			todo!("running individial/batch commands non-interactively");
-
-			/*
-			let (mut ws_stream, _) = connect_to_console(&auth.host, &run.uuid).await.unwrap();
-			eprintln!("websocket established");
-
-			let (write, read) = ws_stream.split();
-
-			let (server_tx, server_rx) = futures_channel::mpsc::unbounded();
-			let to_serv = server_rx.forward(write);
-
-			let refresh_terminal: String = [
-				AsciiChar::FF.as_char().to_string(), // reprint line
-				AsciiChar::SOH.as_char().to_string(), // go home
-				"! ".into(), // insert "! "
-				"\n".into(), // enter
-				AsciiChar::ETX.as_char().to_string(), // ctrl+c to go to #
-			].iter().map(|s| s.as_str()).collect();
-
-			server_tx.unbounded_send(Ok(Message::Text(refresh_terminal))).unwrap();
-
-			read
-				.for_each(|msg| {
-
-				})
-
-			//read.
-
-			//let (write, read) = ws_stream.split();
-			//write.send("asd").unwrap();
-
-			// read & throw away for 500ms, then continue
-			let timeout = tokio::time::delay_for(std::time::Duration::from_millis(500));
-
-			futures_util::pin_mut!(to_serv, timeout, read);
-			loop {
-				futures::select! {
-					() = to_serv => {},
-					() = timeout => {},
-				}
-			}
-
-
-			todo!();
-			*/
-		},
+		SubCmd::Run(_run) => todo!("running individial/batch commands non-interactively"),
 		SubCmd::Expose(expose) => expose.run(&auth.host).await,
 	}
 
 	Ok(())
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+	application().await
 }
 
 /*

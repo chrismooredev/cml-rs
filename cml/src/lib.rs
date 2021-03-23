@@ -3,6 +3,7 @@
 pub mod lab_yaml;
 pub mod rest;
 pub mod rest_types;
+pub mod utils;
 
 pub use rest_types as rt;
 
