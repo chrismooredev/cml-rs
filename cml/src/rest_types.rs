@@ -37,7 +37,8 @@ impl fmt::Display for State {
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Lab {
 	pub id: String,
 	pub state: State,
@@ -51,13 +52,13 @@ pub struct Lab {
 	pub link_count: isize,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimpleNode {
 	pub id: String,
 	pub label: String,
 	pub x: isize,
 	pub y: isize,
-	pub node_definition: String,
+	pub node_definition: NodeDefinition,
 	pub image_definition: Option<String>,
 	pub state: State,
 
@@ -70,7 +71,7 @@ pub struct SimpleNode {
 	pub tags: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LabTopology {
 	#[serde(rename = "lab_title")]
 	pub title: String,
@@ -90,7 +91,7 @@ pub struct LabTopology {
 	pub interfaces: Vec<labeled::Interface<InterfaceDescription>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeDescription {
 	pub x: isize,
 	pub y: isize,
@@ -108,14 +109,14 @@ pub struct NodeDescription {
 	pub tags: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinkDescription {
 	//pub src_int: String,
 	//pub dst_int: String,
 	pub state: State,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InterfaceDescription {
 	/// physical, loopback, etc
 	#[serde(rename = "type")]
@@ -130,7 +131,7 @@ pub struct InterfaceDescription {
 pub mod key {
 	use serde::{Deserialize, Serialize};
 
-	#[derive(Serialize, Deserialize)]
+	#[derive(Debug, Clone, Serialize, Deserialize)]
 	pub struct Console {
 		pub lab_id: String,
 		pub node_id: String,
@@ -139,7 +140,7 @@ pub mod key {
 		pub line: u64,
 	}
 
-	#[derive(Serialize, Deserialize)]
+	#[derive(Debug, Clone, Serialize, Deserialize)]
 	pub struct VNC {
 		pub lab_id: String,
 		pub node_id: String,
@@ -154,13 +155,13 @@ pub mod key {
 pub mod labeled {
 	use serde::{Deserialize, Serialize};
 
-	#[derive(Debug, Serialize, Deserialize)]
+	#[derive(Debug, Clone, Serialize, Deserialize)]
 	pub struct Data<T> {
 		pub id: String,
 		pub data: T,
 	}
 
-	#[derive(Debug, Serialize, Deserialize)]
+	#[derive(Debug, Clone, Serialize, Deserialize)]
 	pub struct Link<T> {
 		pub id: String,
 		pub interface_a: String,
@@ -168,7 +169,7 @@ pub mod labeled {
 		pub data: T,
 	}
 
-	#[derive(Debug, Serialize, Deserialize)]
+	#[derive(Debug, Clone, Serialize, Deserialize)]
 	pub struct Interface<T> {
 		#[serde(rename = "id")]
 		pub int_id: String,
@@ -178,14 +179,14 @@ pub mod labeled {
 	}
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimpleNodeDefinition {
 	pub id: String,
 	pub image_definitions: Vec<String>,
 	pub data: SimpleNodeDefData,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimpleNodeDefData {
 	pub general: NodeDefData::General,
 	pub device: NodeDefData::Device,
@@ -195,18 +196,18 @@ pub struct SimpleNodeDefData {
 mod NodeDefData {
 	use super::*;
 
-	#[derive(Serialize, Deserialize, Debug)]
+	#[derive(Debug, Clone, Serialize, Deserialize)]
 	pub struct General {
-        pub description: String,
-        pub nature: String,
-        pub read_only: bool,
+		pub description: String,
+		pub nature: String,
+		pub read_only: bool,
 	}
 
-	#[derive(Serialize, Deserialize, Debug)]
+	#[derive(Debug, Clone, Serialize, Deserialize)]
 	pub struct Device {
 		pub interfaces: Interfaces,
 	}
-	#[derive(Serialize, Deserialize, Debug)]
+	#[derive(Debug, Clone, Serialize, Deserialize)]
 	pub struct Interfaces {
 		pub has_loopback_zero: bool,
 		pub default_count: usize,
@@ -214,24 +215,24 @@ mod NodeDefData {
 		pub serial_ports: usize,
 	}
 
-	#[derive(Serialize, Deserialize, Debug)]
+	#[derive(Debug, Clone, Serialize, Deserialize)]
 	pub struct UI {
-        pub description: String,
-        pub group: String,
-        pub icon: String,
-        pub label: String,
-        pub label_prefix: String,
-        pub visible: bool,
-        pub has_configuration: bool,
-        pub show_ram: bool,
-        pub show_cpus: bool,
-        pub show_cpu_limit: bool,
-        pub show_data_volume: bool,
-        pub show_boot_disk_size: bool,
-        pub has_config_extraction: bool,
+		pub description: String,
+		pub group: String,
+		pub icon: String,
+		pub label: String,
+		pub label_prefix: String,
+		pub visible: bool,
+		pub has_configuration: bool,
+		pub show_ram: bool,
+		pub show_cpus: bool,
+		pub show_cpu_limit: bool,
+		pub show_data_volume: bool,
+		pub show_boot_disk_size: bool,
+		pub has_config_extraction: bool,
 	}
 
-	#[derive(Serialize, Deserialize, Debug)]
+	#[derive(Debug, Clone, Serialize, Deserialize)]
 	pub struct Sim {
 		pub ram: Option<usize>,
 		pub cpus: Option<usize>,
