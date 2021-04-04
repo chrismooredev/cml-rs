@@ -29,7 +29,7 @@ Uses three environment variables:
 
 * `CML_HOST`: An IP address or hostname where the CML instance can be accessed.
 * `CML_USER`: The username to sign into CML with
-* `CML_PASS64`: A base-64'd version of the user's password (preferred)
+* `CML_PASS64`: A base-64'd version of the user's password (preferred, though should not be counted on for security)
 * `CML_PASS`: A plaintext version of the user's password (not recommended)
 
 ## Command-line completion
@@ -45,10 +45,9 @@ Pre-built binaries are not currently provided on Github.
 cargo install cmlterm --git https://github.com/csm123199/cml-rs --branch main
 ```
 
-For bash autocompletion, you can execute the completion wrapper in your shell. To insert the latest to your .bashrc:
-Then add a `source` it in your .bashrc, if you want to run it for every shell
+For bash autocompletion, you can execute the completion wrapper in your shell. You can have it within any new user shells by adding it to your .profile:
 ```
-echo 'source <(cmlterm --completions bash)' >> .bashrc
+echo 'source <(cmlterm --completions bash)' >> .profile
 ```
 
 ## Basic scripting
@@ -57,6 +56,14 @@ Piped input supports the following prefixes to change this behavior: (use a back
 * prefixing a line with a tilde `~` will not wait for the next prompt before sending. This may be helpful for automating interactive commands.
 * prefixing a line with a grave-quoted string (``` `asd` ```) will wait for the quoted string to appear (specifically within the last 256 bytes of terminal output) before sending the line.
 * (NOT YET IMPLEMENTED) a prefix to override the default prompt timeout
+
+### Scripting
+These control commands can be stacked to interact with each other, each are put before the beginning of the line, sequentially. If you wish to start a line with one of these characters, escape it with a backslash. Backslashes without any of the below characters following them are sent literally. If a line starting with these control sequences does not parse properly, it will be sent literally.
+* `~` - do not wait for the next prompt before sending the command. (Takes precedence over timeout behavior)
+* `!` - do not emit a newline at the end of the line
+* ``` `64:text` ``` - within a rolling buffer of the last N bytes, wait until the specified text appears
+* `%20000%` - change the default timeout to the specified number of milliseconds, for this command. If the timeout passes without either a prompt or expected text, the line will be send anyway.
+
 
 Anything dynamic or more interesting than that may need to wrap `cmlterm` inputs/outputs to adjust the input script. If this is done, you may want to visit the (WIP) [`cmlscript`](https://github.com/csm123199/cml-rs/tree/main/cmlscript) binary within this same project for richer device information, and easier terminal multiplexing.
 

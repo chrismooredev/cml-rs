@@ -1,5 +1,6 @@
 use clap::Clap;
-use futures_util::{future, StreamExt};
+//use futures_util::{future, StreamExt};
+use futures::{future, StreamExt};
 use log::{debug, error, info, trace, warn};
 use std::cell::Cell;
 use tokio::net::TcpStream;
@@ -75,7 +76,7 @@ impl SubCmdExpose {
 		//let (server_tx, server_rx) = futures_channel::mpsc::unbounded();
 
 		// create a channel to pipe messages to WS through
-		let (to_serv, serv_rx) = futures_channel::mpsc::unbounded(); // replace with ::channel() - bounded version?
+		let (to_serv, serv_rx) = futures::channel::mpsc::unbounded(); // replace with ::channel() - bounded version?
 		let mut to_ws_from_tcp = to_serv.clone();
 		let mut to_ws_from_ws = to_serv;
 
@@ -152,7 +153,7 @@ impl SubCmdExpose {
 			.forward(ws_write)
             .inspect(|_| trace!("WS Server <-- {} : WS write connection closed", peer_addr));
 
-		futures_util::pin_mut!(serv_to_client, tcp_to_ws, ws_responder);
+		futures::pin_mut!(serv_to_client, tcp_to_ws, ws_responder);
 		let ((), (), _ws_send_res) = future::join3(serv_to_client, tcp_to_ws, ws_responder).await;
 		// todo: error handling for ws_send_res ?
 

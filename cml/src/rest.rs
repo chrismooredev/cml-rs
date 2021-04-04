@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use reqwest::{header::HeaderMap, Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::HashMap, fmt::Write};
+use std::collections::HashMap;
 use thiserror::Error;
 
 use rt::SimpleNode;
@@ -310,7 +310,7 @@ impl CmlUser {
 	}
 
 	pub async fn lab_topology(&self, lab_id: &str, include_configurations: bool) -> RResult<Option<rt::LabTopology>> {
-		let resp = self.get_v0(format_args!("/labs/{}/topology?exclude_configurations={}", lab_id, include_configurations))
+		let resp = self.get_v0(format_args!("/labs/{}/topology?exclude_configurations={}", lab_id, !include_configurations))
 			.send().await?;
 		let endpoint = resp.url().path().to_owned();
 		let rresp = RawApiResponse::extract(resp).await?;

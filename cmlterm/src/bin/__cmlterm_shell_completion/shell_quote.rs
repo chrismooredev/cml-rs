@@ -2,8 +2,6 @@
 use std::borrow::Cow;
 use smallvec::SmallVec;
 
-use crate::iter_extensions::{ Completable, IterExt, };
-
 /*
 struct ParsingContext {
 	posix: bool,

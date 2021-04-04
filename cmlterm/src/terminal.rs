@@ -3,17 +3,11 @@ use std::collections::HashMap;
 
 use log::{debug, error, trace, warn};
 use thiserror::Error;
-use cml::rest::{CmlUser, CmlError};
+use cml::rest::CmlUser;
 
-use cml::{rest::Authenticate, rest_types::LabTopology};
+use cml::rest_types::LabTopology;
 use cml::rest_types as rt;
 type CmlResult<T> = Result<T, cml::rest::Error>;
-use crate::api::ScriptWaitCondition;
-
-/// Implementors are responsible for driving a terminal for user input, scripting, etc
-trait ConsoleDriver {
-
-}
 
 #[derive(Debug, Clone, Copy, Error)]
 pub enum NodeSearchError {
@@ -51,6 +45,13 @@ pub struct NodeCtx {
 	meta: rt::NodeDescription,
 }
 impl NodeCtx {
+	pub fn host(&self) -> &str { &self.host }
+	pub fn user(&self) -> &str { &self.user }
+	pub fn lab(&self) -> (&str, &str) { (&self.lab.0, &self.lab.1) }
+	pub fn node(&self) -> (&str, &str) { (&self.node.0, &self.node.1) }
+	pub fn meta(&self) -> &rt::NodeDescription { &self.meta }
+
+
 	pub async fn search(client: &CmlUser, lab: &str, device: &str) -> CmlResult<Result<NodeCtx, NodeSearchError>> {
 		// get all the labs and topologies on the CML server
 		let labs = client.labs(true).await?;
@@ -101,7 +102,6 @@ impl ConsoleCtx {
 
 	/// Searches a CML instance for a valid line
 	pub async fn search(client: &CmlUser, node: NodeCtx, line: Option<u64>, keys: Option<&HashMap<String, rt::key::Console>>) -> CmlResult<Result<ConsoleCtx, ConsoleSearchError>> {
-		use std::borrow::Cow;
 		// TODO: allow filtering by CML username?
 
 		debug!("resolved node: {:?}", node);
@@ -159,47 +159,8 @@ impl ConsoleCtx {
 			}
 		}
 	}
+
 }
-/*
-struct Console {
-	// contain some metadata (host, user, lab, device, line num)
-	meta: ConsoleCtx,
-}
-
-impl Console {
-	async fn from_ctx(ctx: ConsoleCtx) -> Result<(), ()> {
-		let (ws_stream, resp) = crate::connect_to_console(host, uuid).await.unwrap();
-
-		debug!("websocket established (HTTP status code {:?})", resp.status());
-		trace!("websocket headers:");
-		for header in resp.headers().iter() {
-			trace!("\t{:?}", header);
-		}
-	}
-	async fn init(client: &CmlUser, uuid: &String) -> Result<Option<Self>, CmlError> {
-		let keys = client.keys_console(true).await?;
-		let agh = keys.into_iter().find(|(uuid, meta)| uuid == uuid);
-		match agh {
-			None => Ok(None),
-			Some((uuid, cons)) => {
-				let ctx = ConsoleCtx {
-					host: client.host.clone(),
-					user: client.user.clone(),
-					lab: (cons.lab_id, String::new()),
-					device: (cons.node_id, cons.node_label),
-					line: cons.line,
-					uuid,
-				}
-			}
-		}
-	}
-
-
-	fn descriptor(&self) -> &ConsoleCtx {
-		&self.meta
-	}
-}
-*/
 
 // internal helpers used for ConsoleCtx::search
 trait NamedMatcher {

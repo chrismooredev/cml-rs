@@ -1,4 +1,5 @@
 
+use std::{borrow::Cow, collections::VecDeque};
 use thiserror::Error;
 use native_tls::TlsConnector;
 use tokio::net::TcpStream;
@@ -18,10 +19,19 @@ macro_rules! esc {
 	};
 }
 
+fn truncate_string<'a>(s: &'a str, len: usize) -> Cow<'a, str> {
+	if s.len() > len*4 {
+		Cow::from(format!("{}<...truncated...>{}", &s[..len], &s[s.len()-len..]))
+	} else {
+		Cow::from(s)
+	}
+}
+
 pub mod expose;
 pub mod listing;
 pub mod api;
 pub mod terminal;
+pub mod term;
 pub mod open_term;
 
 #[derive(Debug, Error)]
@@ -60,3 +70,36 @@ pub async fn connect_to_console(host: &str, uuid: &str) -> Result<(WebSocketStre
 	let endpoint = format!("wss://{}/ws/dispatch/frontend/console?uuid={}", host, uuid);
 	tokio_tungstenite::client_async(endpoint, s).await
 }
+
+
+// misc private utilities
+
+/// Adds data to the rotating buffer, and makes it contiguous.
+/// Only fills the buffer to the buffer's capacity, and rotates data in terms of that.
+/// In other words, this function will not allocate.
+fn update_chunkbuf(buffer: &mut VecDeque<u8>, chunk: &[u8]) {
+	// update our cache, later notify listeners
+
+	// shorten the VecDeque to a length capable of holding the data without exceeding capacity
+	// then fill the VecDeque with our new data chunk
+
+	if buffer.len() + chunk.len() <= buffer.capacity() {
+		// we can hold this chunk without removing elements
+		buffer.extend(chunk);
+	} else if chunk.len() > buffer.capacity() {
+		// this will extend capacity - we want to be able to hold at least the size of each chunk
+		buffer.clear();
+		buffer.extend(chunk);
+	} else {
+		// we must delete some elements to hold this chunk
+		let start_ind = buffer.capacity() - chunk.len();
+		let rotate_amt = buffer.len() .min( chunk.len() );
+		
+		buffer.rotate_left(rotate_amt);
+		buffer.resize(start_ind, 0);
+		buffer.extend(chunk);
+	}
+
+	buffer.make_contiguous();
+}
+
