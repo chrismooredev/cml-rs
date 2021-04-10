@@ -256,6 +256,7 @@ impl ConsoleDriver {
 					if s.len() < 3 { return false; }
 					// get inner subslice
 					let prompt = &s[1..s.len()-1];
+					if prompt.len() < 2 { return false; }
 					// according to ASA: must start/end with alphanumeric, middle can contain dashes
 					// IOS allows middle underscores, dots
 					// be more permissive than less
