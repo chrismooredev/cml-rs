@@ -235,41 +235,63 @@ impl ConsoleDriver {
 				// get the last non-empty string
 				.map(|s| s.trim())
 				.filter_map(|s| if s.len() > 0 { Some(s) } else { None })
-				.last()
-	
-				// if there is a prompt inside, extract it
-				.map::<Option<&str>, _>(|s| {
-					// go until next '#', '>', '$'
-					
-					// IOS+ASA+Linux prompts
-					let end = s.find(|c| c == '#' || c == '>' || c == '$')?;
-	
-					// prompts/hostnames should not be over 64 chars
-					if end > 64 { return None; }
-	
-					Some(&s[..=end])
+				//.last()
+				/*.filter_map::<&str, _>(|s| { // if there is a prompt inside, extract it
+					// IOS+ASA+Linux prompts, next '#', '>', '$'
+					s.find(|c| c == '#' || c == '>' || c == '$')
+						.filter(|i| *i <= 64) // prompts/hostnames should not be over 64 chars
+						.map(|i| &s[..=i])
+				})*/
+				.filter_map(|s| { // validate it as a proper hostname
+					let node_def = &self.ctx.node().meta().node_definition;
+					debug!("detecting prompt for {:?}", node_def);
+
+					// try to validate hostnames for the specific machine types
+					if node_def.is_ios() {
+						// length: unlimited? (up to 99 shown on enable prompt, truncated for config/etc)
+
+						let prompt = s.find(|c| c == '>' || c == '#').map(|i| &s[..=i])?;
+						// 63 prompt len + prompt ending char + configuration mode
+						if !( 2 <= prompt.len() && prompt.len() <= 63+1+(2+16) ) { return None; }
+						let prompt_text = &prompt[..prompt.len()-1];
+
+						// IOS seems to be more permissive
+						if ! prompt_text.chars().all(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '(' | ')')) { return None; }
+
+						Some(prompt)
+					} else if node_def.is_asa() {
+						// length: 63 chars (can go higher for `(config)#` etc)
+						// start/end: letter/digit
+						// interior: letter/digit/hyphen
+
+						let prompt = s.find(|c| c == '>' || c == '#').map(|i| &s[..=i])?;
+						// 63 prompt len + prompt ending char + configuration mode
+						if !( 2 <= prompt.len() && prompt.len() <= 63+1+(2+16) ) { return None; }
+						let prompt_text = &prompt[..prompt.len()-1];
+
+						if ! prompt_text.starts_with(|c: char| c.is_alphanumeric()) { return None; }
+						if ! prompt_text.ends_with(|c: char| c.is_alphanumeric() || c == ')') { return None; }
+
+						// ensure the middle of the prompt contains only alphanumeric, and select characters
+						if ! prompt_text.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '(' | ')')) { return None; }
+
+						Some(prompt)
+					} else if node_def.is_linux() {
+						// do very little processing since they can vary so widely
+						let prompt = s.find(|c| c == '$' || c == '#').map(|i| &s[..=i])?;
+						if prompt.len() > 100 { return None; }
+						Some(prompt)
+					} else { // unknown
+						// unknown device - use linux "permissiveness"
+						let prompt = s.find(|c| c == '>' || c == '$' || c == '#').map(|i| &s[..=i])?;
+						if prompt.len() > 100 { return None; }
+						Some(prompt)
+					}
 				})
-				.flatten()
-	
-				// validate it as a proper hostname
-				.filter(|s| {
-					if s.len() < 3 { return false; }
-					// get inner subslice
-					let prompt = &s[1..s.len()-1];
-					if prompt.len() < 2 { return false; }
-					// according to ASA: must start/end with alphanumeric, middle can contain dashes
-					// IOS allows middle underscores, dots
-					// be more permissive than less
-					// also allow parens, to support config prompts like firewall(config)#
-					prompt.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '.') &&
-					prompt.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '.' || c == ')') &&
-					prompt[1..prompt.len()-1].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '(')
-				});
+				.last();
 	
 			if let Some(prompt) = prompt {
-				Some((
-					prompt, s.trim_end().ends_with(prompt)
-				))
+				Some(( prompt, s.trim_end().ends_with(prompt) ))
 			} else {
 				None
 			}
