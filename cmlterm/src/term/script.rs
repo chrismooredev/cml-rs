@@ -79,7 +79,6 @@ impl RecvState {
 		if self.cmd_cache.is_none() && self.stdin_handler.is_terminated() && !self.to_console.is_closed() {
 			// tell the server we will not send any more input
 			debug!("disconnecting to_console as we cannot receive more commands");
-			self.to_console.send(TermMsg::Close).await?;
 			self.to_console.disconnect();
 		}
 
@@ -442,7 +441,8 @@ impl ScriptedTerminal {
 				srv_send_raw.send(msg).await?;
 			}
 
-			debug!("to_srv_driver done");
+			srv_send_raw.close().await?;
+			debug!("to_srv_driver done, srv_send_raw closed");
 			Result::<_, WsError>::Ok(())
 		};
 

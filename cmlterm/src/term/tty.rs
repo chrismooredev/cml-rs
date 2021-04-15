@@ -97,7 +97,7 @@ impl UserMeta {
 
 				terminal::disable_raw_mode().unwrap();
 
-				srv_send.send(TermMsg::Close).await?;
+				srv_send.close_channel();
 
 				break;
 			}
@@ -138,6 +138,7 @@ impl UserMeta {
 		// reprint the current line (Ctrl-L) for the prompt/currently typed line + signal to user that we are ready
 		// will also prime the prompt, if possible
 		srv_send.send(TermMsg::text(AsciiChar::FF.as_char())).await?;
+		// TODO: try_send incase the sink was closed
 
 		loop {
 			tokio::select! {
@@ -145,6 +146,7 @@ impl UserMeta {
 				() = &mut slp, if !initialized => {
 					debug!("prompt not obtained after {}ms, sending newline", self.auto_prompt_ms);
 					srv_send.send(TermMsg::text("\r")).await?;
+					// TODO: try_send incase the sink was closed
 				},
 
 				// get the next update message (.next() can be safely dropped if timeout occurs)
@@ -228,7 +230,8 @@ impl UserTerminal {
 				srv_send_raw.send(msg).await?;
 			}
 
-			debug!("to_srv_driver done");
+			srv_send_raw.close().await?;
+			debug!("to_srv_driver done, srv_send_raw closed");
 			Result::<_, WsError>::Ok(())
 		};
 

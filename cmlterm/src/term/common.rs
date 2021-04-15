@@ -141,13 +141,8 @@ impl Future for ServerHandler {
 #[derive(Debug)]
 pub struct ConsoleDriver {
 	ctx: Rc<ConsoleCtx>,
-	//uuid: String,
-	//ws_stream: WebSocketStream<TlsStream<TcpStream>>,
-	//ws_write: 
-
-	//ws_read: Fuse<SplitStream<WebSocketStream<TlsStream<TcpStream>>>>,
-	//ws_send: SplitSink<WebSocketStream<TlsStream<TcpStream>>, Message>,
 	ws: Fuse<WebSocketStream<TlsStream<TcpStream>>>,
+	ws_close_sent: bool,
 	// connection state metadata
 
 	/// The server has sent us a `Close` message and would like to close the connection
@@ -187,6 +182,7 @@ impl ConsoleDriver {
 			//ws_read: ws_read.fuse(),
 			//ws_send,
 			ws: ws_stream.fuse(),
+			ws_close_sent: false,
 
 			// connection state metadata
 			received_chunks: 0,
@@ -433,6 +429,11 @@ impl Sink<TermMsg> for ConsoleDriver {
 	}
 	fn start_send(mut self: Pin<&mut Self>, item: TermMsg) -> Result<(), Self::Error> {
 		// send data to server
+
+		if let TermMsg::Close = item {
+			debug!("ConsoleDriver sent Close WS Message manually");
+		}
+
 		self.ws.start_send_unpin(Message::from(item))
 	}
 	fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -444,7 +445,28 @@ impl Sink<TermMsg> for ConsoleDriver {
 		// send a close message to server
 		// once done, return Ready(Ok(()))
 		
+		if ! self.ws_close_sent {
+			match self.ws.poll_ready_unpin(cx) {
+				Poll::Ready(Ok(())) => {},
+				p @ _ => return p,
+			}
+			self.ws_close_sent = true;
+			debug!("ConsoleDriver sent Close WS Message on sink close");
+
+			// send WS close message.
+			// If it cannot be sent immediatey, it will return (and thus we will) a Poll::Pending
+			self.ws.start_send_unpin(Message::Close(None))?;
+		}
+
+		// Close the underlying sink. If it cannot (eg; still buffering the above Close) we will return Poll::Pending
 		self.ws.poll_close_unpin(cx)
+	}
+}
+impl std::ops::Drop for ConsoleDriver {
+	fn drop(&mut self) {
+		if ! self.ws_close_sent {
+			error!("Dropping ConsoleDriver without closing the sink. This should be considered a programming error.");
+		}
 	}
 }
 
