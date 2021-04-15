@@ -219,11 +219,11 @@ impl ConsoleDriver {
 
 	pub async fn send_text<S: Into<String>>(&mut self, msg: S) -> Result<(), WsError> {
 		//self.server_tx.send(Message::text(msg)).await
-		self.send(Message::text(msg)).await
+		self.send(TermMsg::text(msg)).await
 	}
 	pub async fn send_close(&mut self) -> Result<(), WsError> {
 		//self.server_tx.send(Message::Close(None)).await
-		self.send(Message::Close(None)).await
+		self.send(TermMsg::Close).await
 	}
 
 	/// Finds a prompt (suitable for the current device) and returns it
@@ -235,13 +235,6 @@ impl ConsoleDriver {
 				// get the last non-empty string
 				.map(|s| s.trim())
 				.filter_map(|s| if s.len() > 0 { Some(s) } else { None })
-				//.last()
-				/*.filter_map::<&str, _>(|s| { // if there is a prompt inside, extract it
-					// IOS+ASA+Linux prompts, next '#', '>', '$'
-					s.find(|c| c == '#' || c == '>' || c == '$')
-						.filter(|i| *i <= 64) // prompts/hostnames should not be over 64 chars
-						.map(|i| &s[..=i])
-				})*/
 				.filter_map(|s| { // validate it as a proper hostname
 					let node_def = &self.ctx.node().meta().node_definition;
 					debug!("detecting prompt for {:?}", node_def);
@@ -325,8 +318,7 @@ impl Stream for ConsoleDriver {
 		// wait until we have room to send a message
 
 		loop {
-
-			match <Self as Sink<Message>>::poll_ready(self.as_mut(), cx) {
+			match self.ws.poll_ready_unpin(cx) {
 				Poll::Ready(Ok(())) => {
 					// there is spare capacity to send
 				},
@@ -356,20 +348,16 @@ impl Stream for ConsoleDriver {
 							if log::log_enabled!(log::Level::Trace) {
 								trace!("Responding to websocket ping (message = {:?})", String::from_utf8_lossy(&payload));
 							}
-							//self.to_websocket.unbounded_send(Message::Pong(payload)).unwrap();
 
-							//self.server_tx.start_send(Message::Pong(payload)).expect("already verified room for message");
-							self.start_send_unpin(Message::Pong(payload)).expect("already verified room for message");
+							self.ws.start_send_unpin(Message::Pong(payload)).expect("already verified room for message");
 
 							// wait for a new message
-							//Poll::Pending
 						},
 						Message::Close(close_msg) => {
 							//self.to_websocket.unbounded_send(Message::Close(payload)).unwrap();
 							debug!("Received close message");
 
 							// would it be applicable to return Ready(None) here?
-							//Poll::Pending
 						},
 						Message::Binary(odata) => {
 							let was_first = self.received_chunks == 0;
@@ -395,9 +383,9 @@ impl Stream for ConsoleDriver {
 						},
 						_ => {
 							warn!("Received unexpected websocket message from server: {:?}", msg);
-							//Poll::Pending
 						},
 					}
+					// continue onto the next loop iteration
 				},
 				Poll::Ready(None) =>  {
 					trace!("inner websocket returned Poll::Ready(None)");
@@ -405,7 +393,6 @@ impl Stream for ConsoleDriver {
 				},
 				Poll::Pending => return Poll::Pending,
 			}
-
 		}
 	}
 }
@@ -442,65 +429,22 @@ impl Sink<TermMsg> for ConsoleDriver {
 		// prepare to send a value
 		// producers must receive Ready(Ok(())) before calling .send
 
-		<Self as Sink<Message>>::poll_ready(Pin::new(&mut self), cx)
+		self.ws.poll_ready_unpin(cx)
 	}
 	fn start_send(mut self: Pin<&mut Self>, item: TermMsg) -> Result<(), Self::Error> {
 		// send data to server
-		<Self as Sink<Message>>::start_send(Pin::new(&mut self), Message::from(item))
+		self.ws.start_send_unpin(Message::from(item))
 	}
 	fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
 		// flush data to server
 		
-		<Self as Sink<Message>>::poll_flush(Pin::new(&mut self), cx)
+		self.ws.poll_flush_unpin(cx)
 	}
 	fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
 		// send a close message to server
 		// once done, return Ready(Ok(()))
 		
-		<Self as Sink<Message>>::poll_close(Pin::new(&mut self), cx)
-	}
-}
-
-
-impl Sink<Message> for ConsoleDriver {
-	type Error = WsError;
-	fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-		// prepare to send a value
-		// producers must receive Ready(Ok(())) before calling .send
-
-		//self.server_tx.poll_ready(cx)
-
-		//Pin::new(&mut self.ws_send).poll_ready(cx)
-		Pin::new(&mut self.ws).poll_ready(cx)
-	}
-	fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
-		// send data to server
-		// TODO: move to async handler?
-		self.ctx.log_message("send", &item);
-
-		//self.server_tx.start_send(item)
-		//Pin::new(&mut self.ws_send).start_send(item)
-		Pin::new(&mut self.ws).start_send(item)
-	}
-	fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-		// flush data to server
-		
-		//self.server_tx.poll_flush(cx)
-		//Pin::new(&mut self.server_tx).poll_flush(cx)
-		//Pin::new(&mut self.ws_send).poll_flush(cx)
-		Pin::new(&mut self.ws).poll_flush(cx)
-
-		//self.server_send_proc.poll_unpin(cx)
-
-		//self.server_send_processor.poll()
-	}
-	fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-		// send a close message to server
-		// once done, return Ready(Ok(()))
-		
-		//Pin::new(&mut self.server_tx).poll_close(cx)
-		//Pin::new(&mut self.ws_send).poll_close(cx)
-		Pin::new(&mut self.ws).poll_close(cx)
+		self.ws.poll_close_unpin(cx)
 	}
 }
 
