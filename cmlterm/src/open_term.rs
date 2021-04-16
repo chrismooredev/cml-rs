@@ -28,6 +28,10 @@ pub struct SubCmdOpen {
 	#[clap(short, long)]
 	_uuids: bool,
 
+	/// Expose a device's raw console to stdio, without buffering
+	#[clap(short, long)]
+	raw: bool,
+
 	uuid_or_lab: String,
 }
 impl SubCmdOpen {
@@ -75,12 +79,16 @@ impl SubCmdOpen {
 		}
 
 		if let Some(ctx) = context {
+			use futures::stream::StreamExt;
+			use crate::term::backend::websocket::WsConsole;
 			use crate::term::common::ConsoleDriver;
-			use crate::term::tty::UserTerminal;
-			use crate::term::script::ScriptedTerminal;
+			use crate::term::frontend::types::{UserTerminal, ScriptedTerminal};
 
-			let driver = ConsoleDriver::connect(ctx).await.unwrap();
-			if std::io::stdin().is_tty() {
+			let stream = WsConsole::new(&ctx).await.unwrap();
+			let driver = ConsoleDriver::from_connection(ctx, Box::new(stream.fuse()));
+			if self.raw {
+				todo!("raw stream forwarder");
+			} else if std::io::stdin().is_tty() {
 				let ut = UserTerminal::new(driver);
 				ut.run().await.expect("an error within the tty stdin-driven terminal program");
 			} else {

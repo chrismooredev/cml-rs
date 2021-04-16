@@ -8,21 +8,18 @@ use futures::channel::mpsc::{Receiver, SendError, Sender};
 use futures::{SinkExt, StreamExt};
 use log::{debug, error, trace, warn};
 
-use tokio_tungstenite::tungstenite::error::Error as WsError;
+use crate::api::{self, WaitMode};
 
-use api::WaitMode;
-use crate::api;
-
-use super::common::{ConsoleDriver, ConsoleUpdate, TermMsg};
+use crate::term::common::{ConsoleDriver, ConsoleUpdate};
 
 #[derive(Debug)]
-struct RecvState {
+struct RecvState<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> {
 	/// Incoming commands. May be closed if the server closes.
 	stdin_handler: Receiver<ScriptCmd>,
 	/// Output data from the console
-	from_console: futures::stream::Fuse<SplitStream<ConsoleDriver>>,
+	from_console: futures::stream::Fuse<SplitStream<ConsoleDriver<E>>>,
 	/// Data sent to the console. A TermMsg::Close should be sent when stdin_handler closes.
-	to_console: Sender<TermMsg>,
+	to_console: Sender<String>,
 
 	/// The currently working command (switch .stdin_handler to peekable?)
 	cmd_cache: Option<ScriptCmd>,
@@ -37,8 +34,8 @@ struct RecvState {
 	/// Used to determine if an initialization message was sent
 	sent_init: bool,
 }
-impl RecvState {
-	fn new(stdin_handler: Receiver<ScriptCmd>, to_console: Sender<TermMsg>, srv_recv: SplitStream<ConsoleDriver>) -> RecvState {
+impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> RecvState<E> {
+	fn new(stdin_handler: Receiver<ScriptCmd>, to_console: Sender<String>, srv_recv: SplitStream<ConsoleDriver<E>>) -> RecvState<E> {
 		RecvState {
 			stdin_handler,
 			from_console: srv_recv.fuse(),
@@ -113,13 +110,6 @@ impl RecvState {
 
 			// timeout if we can receive data from the console
 			() = timeout, if !self.from_console.is_terminated() && (self.cmd_cache.is_some() || !self.stdin_handler.is_terminated()) => {
-				/*if self.initializing { // no data after trying to initialize - send \r
-					debug!("timeout reached waiting for console init, sending carraige return");
-					self.to_console.send(TermMsg::text("\r")).await?;
-				} else {
-					self.timed_out = true;
-					debug!("timeout reached - does action need to happen?");
-				}*/
 				return Ok(false)
 			},
 
@@ -190,7 +180,7 @@ impl RecvState {
 						// send NAK FF - delete line, refresh line
 						if !self.sent_init {
 							debug!("initializing console...");
-							self.to_console.send(TermMsg::text("\x15\x0C")).await?;
+							self.to_console.send("\x15\x0C".to_owned()).await?;
 							self.sent_init = true;
 						} else if self.sent_init && timed_out {
 							todo!("console init attempt #2")
@@ -213,10 +203,10 @@ impl RecvState {
 			debug!("sending command: {:?}", cmd);
 
 			if cmd.command.len() > 0 {
-				self.to_console.feed(TermMsg::text(cmd.command)).await?;
+				self.to_console.feed(cmd.command).await?;
 			}
 			if !cmd.skip_newline {
-				self.to_console.feed(TermMsg::text("\r")).await?;
+				self.to_console.feed("\r".to_owned()).await?;
 			}
 
 			self.to_console.flush().await?;
@@ -246,8 +236,8 @@ impl RecvState {
 ///   * TODO: function-key to emit commands to set term width/length ?
 /// 
 /// Contains setup data to initialize a user-terminal
-pub struct ScriptedTerminal {
-	driver: ConsoleDriver,
+pub struct ScriptedTerminal<E> {
+	driver: ConsoleDriver<E>,
 	//to_srv: Receiver<TermMsg>,
 	meta: ScriptedMeta,
 }
@@ -271,20 +261,6 @@ enum ScriptedError {
 }
 
 impl ScriptedMeta {
-	/* 
-	fn handle_update(&self, stdout: &mut StdoutLock, update: ConsoleUpdate) -> Result<(), TtyError> {
-		let ConsoleUpdate { last_chunk, last_prompt, was_first } = update;
-		let mut data = last_chunk.as_slice();
-
-		if let Some((_prompt, last_needle)) = last_prompt {
-			todo!("something to do with last_needle");
-		}
-		
-		stdout.write_all(data)?;
-		stdout.flush()?;
-
-		Ok(())
-	} */
 
 	// Creates a new thread for stdin to listen on, and returns a Receiver for each command, as well as a join handle for the thread.
 	// The reciever (nd thread) will terminate at the same time as stdin, at which point the thread should be joined to discover any panics.
@@ -340,19 +316,19 @@ impl ScriptedMeta {
 }
 
 #[derive(Debug, Error)]
-pub enum TtyError {
+pub enum TtyError<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> {
 	#[error("A terminal IO error occured.")]
 	Io(#[from] std::io::Error),
 	#[error("A console connection error occured.")]
-	WebSocket(#[from] WsError),
+	Connection(#[from] Box<E>),
 	#[error("An error occured writing terminal title.")]
 	Terminal(#[from] crossterm::ErrorKind),
 	#[error("Send buffer has overfilled")]
 	Buffer(#[from] SendError),
 }
 
-impl ScriptedTerminal {
-	pub fn new(driver: ConsoleDriver) -> ScriptedTerminal {
+impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> ScriptedTerminal<E> {
+	pub fn new(driver: ConsoleDriver<E>) -> ScriptedTerminal<E> {
 		ScriptedTerminal {
 			driver,
 			//to_srv,
@@ -368,15 +344,15 @@ impl ScriptedTerminal {
 	/// Data from the console is sent back to stdout, setting the terminal's title as appropriate.
 	pub async fn run(self) -> anyhow::Result<()> {
 		let ScriptedTerminal { driver, meta } = self;
-		let (to_console, console_queue) = futures::channel::mpsc::channel::<TermMsg>(16);
+		let (to_console, console_queue) = futures::channel::mpsc::channel::<String>(16);
 
-		let (srv_send_raw, srv_recv) = driver.split::<TermMsg>();
+		let (srv_send_raw, srv_recv) = driver.split::<String>();
 
 		let (stdin_handler, stdin_jh) = meta.drive_input()?;
 
 		// handle just prompted info for now
 
-		async fn fmain_loop(stdin_handler: Receiver<ScriptCmd>, to_console: Sender<TermMsg>, srv_recv: SplitStream<ConsoleDriver>) -> anyhow::Result<()> {
+		async fn fmain_loop<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static>(stdin_handler: Receiver<ScriptCmd>, to_console: Sender<String>, srv_recv: SplitStream<ConsoleDriver<E>>) -> anyhow::Result<()> {
 			let mut state = RecvState::new(stdin_handler, to_console, srv_recv);
 
 			loop {
@@ -401,7 +377,7 @@ impl ScriptedTerminal {
 					let s = state.last_chunk.make_contiguous();
 					let s = &s[s.len()-12..];
 					if s.windows(SENTINEL.len()).any(|s| s == SENTINEL) {
-						state.to_console.send(TermMsg::text(" ")).await?;
+						state.to_console.send(" ".to_owned()).await?;
 						paged = true;
 					}
 				}
@@ -443,14 +419,14 @@ impl ScriptedTerminal {
 
 			srv_send_raw.close().await?;
 			debug!("to_srv_driver done, srv_send_raw closed");
-			Result::<_, WsError>::Ok(())
+			Result::<_, E>::Ok(())
 		};
 
 		debug!("waiting for scripted futures to complete");
 
 		//let (handler, recv, driver): (Result<(), SendError>, Result<(), TtyError>, Result<(), WsError>) = futures::future::join3(stdin_handler, srv_recv, to_srv_driver).await;
 		//handler?; recv?; driver?;
-		let (main_loop_res, driver): (anyhow::Result<()>, Result<(), WsError>) = futures::future::join(main_loop, to_srv_driver).await;
+		let (main_loop_res, driver): (anyhow::Result<()>, Result<(), E>) = futures::future::join(main_loop, to_srv_driver).await;
 		
 		main_loop_res?; driver?;
 
