@@ -132,9 +132,7 @@ impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> RecvState<E
 			
 			// take value out so we don't partially borrow from self
 			let cmd = self.cmd_cache.take().unwrap();
-			//let add_newline = cmd.add_newline();
-			//let mut send_command_text = false;
-
+			
 			// three wait "modes" - immediate, expect, prompt
 			match &cmd.wait_mode {
 				WaitMode::Immediate => { /* sending */},
@@ -172,7 +170,6 @@ impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> RecvState<E
 						.unwrap_or(false);
 
 					// if we sent only immediate commands, wait a bit for data to come back
-					// if we 
 					if self.last_update.is_none() {
 						// need to initialize the prompt
 
@@ -210,10 +207,8 @@ impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> RecvState<E
 			}
 
 			self.to_console.flush().await?;
-			//self.commands_processed += 1;
 			self.commands_sent.push(Instant::now());
 			self.chunk_received_after_last_sent = false;
-			//self.last_update = None;
 			Ok(Some(true))
 		} else {
 			Ok(Some(false))
@@ -292,19 +287,13 @@ impl ScriptedMeta {
 						false // EOF
 					};
 
-					//trace!("read line from stdin: {:?}", line);
-
 					let cmd = match api::ScriptCommand::from_str(&line) {
 						Ok(c) => c,
 						Err(s) => api::ScriptCommand::basic(s)
 					};
-					//let cond = cond.map(|s| s.to_owned());
-					//let cmd = &line[condlen..];
 
-					//trace!("\\-> processed into {:?}", (&cond, &cmd));
 					trace!("processed into {:?}", cmd);
 
-					//from_stdin.send((cond, cmd.to_owned())).await?;
 					from_stdin.send(cmd).await?;
 
 					line.clear();
@@ -424,8 +413,6 @@ impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> ScriptedTer
 
 		debug!("waiting for scripted futures to complete");
 
-		//let (handler, recv, driver): (Result<(), SendError>, Result<(), TtyError>, Result<(), WsError>) = futures::future::join3(stdin_handler, srv_recv, to_srv_driver).await;
-		//handler?; recv?; driver?;
 		let (main_loop_res, driver): (anyhow::Result<()>, Result<(), E>) = futures::future::join(main_loop, to_srv_driver).await;
 		
 		main_loop_res?; driver?;

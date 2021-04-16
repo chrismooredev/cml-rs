@@ -16,10 +16,6 @@ pub struct SubCmdOpen {
 	#[clap(short, long)]
 	boot: bool,
 
-	/// If accepting input over stdin, then waits for prompt before sending next command
-	#[clap(short, long)]
-	wait: bool,
-
 	/// Does not affect functionality, shows lab/node IDs when auto-completing
 	#[clap(short, long)]
 	_ids: bool,
@@ -28,7 +24,7 @@ pub struct SubCmdOpen {
 	#[clap(short, long)]
 	_uuids: bool,
 
-	/// Expose a device's raw console to stdio, without buffering
+	/// Expose a device's raw console to stdio, without buffering. Suitable for fine-grained device scripting.
 	#[clap(short, long)]
 	raw: bool,
 
@@ -82,18 +78,19 @@ impl SubCmdOpen {
 			use futures::stream::StreamExt;
 			use crate::term::backend::websocket::WsConsole;
 			use crate::term::common::ConsoleDriver;
-			use crate::term::frontend::types::{UserTerminal, ScriptedTerminal};
+			use crate::term::frontend::types::{UserTerminal, ScriptedTerminal, RawTerminal};
 
 			let stream = WsConsole::new(&ctx).await.unwrap();
 			let driver = ConsoleDriver::from_connection(ctx, Box::new(stream.fuse()));
 			if self.raw {
-				todo!("raw stream forwarder");
+				let rt = RawTerminal::new(driver);
+				rt.run().await.expect("an error within the raw stdin-driven terminal program");
 			} else if std::io::stdin().is_tty() {
 				let ut = UserTerminal::new(driver);
 				ut.run().await.expect("an error within the tty stdin-driven terminal program");
 			} else {
 				let st = ScriptedTerminal::new(driver);
-				st.run().await.expect("an error within the non-tty stdin-driven terminal program");
+				st.run().await.expect("an error within scripted stdin-driven terminal program");
 			}
 		} else {
 			todo!("no console device found for descriptor");
