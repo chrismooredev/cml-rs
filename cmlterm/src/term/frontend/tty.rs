@@ -54,19 +54,39 @@ struct UserMeta {
 impl UserMeta {
 	fn handle_update<E: Send + Sync + std::fmt::Debug + std::error::Error>(&self, stdout: &mut StdoutLock, update: ConsoleUpdate) -> Result<(), TtyError<E>> {
 		let ConsoleUpdate { last_chunk, last_prompt, was_first } = update;
-		let mut data = last_chunk.as_slice();
+		let mut data = last_chunk.clone();
 
 		// strip double-newline that some terminals do on start
 		if stdout.is_tty() && was_first && data.starts_with(b"\r\n") {
-			data = &data[2..];
+			data = data[2..].to_vec();
 		}
-		if let Some((prompt, _last_needle)) = last_prompt {
+		if let Some((prompt, last_needle)) = last_prompt {
+			// if terminal coloring is enabled, color the prompt
+			if colored::control::SHOULD_COLORIZE.should_colorize() && last_needle {
+				let d = data.rsplit(|c| *c == b'\r' || *c == b'\n').next();
+				if let Some(s) = d {
+					if let Ok(dataend) = String::from_utf8(s.to_vec()) {
+						use colored::*;
+						assert_eq!(prompt, dataend.trim(), "received prompt (at end of line) and trimmed line are not the same");
+						assert!(data.ends_with(dataend.as_bytes()));
+						debug!("colorizing prompt ({:?})", dataend);
+						
+						// truncate string to before the colored section
+						data.truncate(data.len() - dataend.len());
+
+						// reappend string, with color
+						data.extend_from_slice(format!("{}", dataend.red()).as_bytes());
+
+						// TODO: if on IOS, color hostname/config prompts differently
+					}
+				}
+			}
 			if *self.last_set_prompt.borrow() != prompt {
 				self.set_title(stdout, prompt)?;
 			}
 		}
 		
-		stdout.write_all(data)?;
+		stdout.write_all(&data)?;
 		stdout.flush()?;
 
 		Ok(())
