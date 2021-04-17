@@ -9,8 +9,8 @@ use crate::TerminalError;
 
 #[derive(Clap)]
 pub struct SubCmdOpen {
-	#[clap(short, long)]
-	_vnc: bool,
+	//#[clap(short, long)]
+	//_vnc: bool,
 
 	/// Boots the machine if necessary. If autocompleting, also shows all available devices.
 	#[clap(short, long)]
@@ -28,6 +28,8 @@ pub struct SubCmdOpen {
 	#[clap(short, long)]
 	raw: bool,
 
+	/// Accepts a combination of ID or label for labs and nodes
+	#[clap(value_name = "/lab/node[/line = 0]")]
 	uuid_or_lab: String,
 }
 impl SubCmdOpen {

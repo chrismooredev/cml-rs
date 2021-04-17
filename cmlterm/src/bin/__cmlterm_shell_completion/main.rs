@@ -403,18 +403,12 @@ async fn perform_completions(ctx: CompletionVars) -> CmlResult<Vec<String>> {
 
 		c
 	} else if let Some(&"open") = words.get(1) {
-		/*
-		if ! words.contains(&"--") && cword.starts_with('-') {
-			let opts = ["--vnc"];
-		}
-		*/
-
 		let mut completes: Vec<String> = Vec::new();
 		let show_all = ctx.has_flag("-b", "--boot");
 		let show_ids = ctx.has_flag("-i", "--ids");
 		let show_uuids = ctx.has_flag("-u", "--uuids");
 		// unused - doesn't affect completion
-		let _should_wait = ctx.has_flag("-w", "--wait");
+		let _raw = ctx.has_flag("-r", "--raw");
 
 		let auth = cml::get_auth_env().unwrap();
 		let client = auth.login().await?;
