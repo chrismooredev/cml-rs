@@ -1,6 +1,6 @@
 [package]
 name = "cmlterm"
-version = "0.5.5"
+version = "0.5.7"
 authors = ["Chris Moore <35407569+csm123199@users.noreply.github.com>"]
 edition = "2018"
 homepage = "https://github.com/csm123199/cml-rs"
@@ -20,12 +20,17 @@ tokio = { version = "1.4.0", features = ["full"] }
 serde = { version = "1.0.120", features = ["derive"] }
 serde_json = "1.0.61"
 
-# websocket stuff
-#futures-util = "0.3.13"
-#futures-channel = "0.3.13"
+# backend
+tokio-stream = { version = "0.1.3", features = [ "net" ] }
+
+# ssh backend
+async-io = "1.4.0"
+futures-io = "0.3.14"
+async-ssh2-lite = "0.2.1"
+
+# websocket backend
 tokio-tungstenite = "0.13.0"
 tokio-native-tls = "0.3.0"
-tokio-stream = { version = "0.1.3", features = [ "net" ] }
 ascii = "1.0.0"
 
 # tty terminal
