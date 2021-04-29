@@ -61,7 +61,7 @@ impl UserMeta {
 		let mut data = last_chunk;
 
 		// strip double-newline that some terminals do on start
-		if stdout.is_tty() && was_first && data.starts_with(b"\r\n") {
+		while stdout.is_tty() && was_first && data.starts_with(b"\r\n") {
 			data = data[2..].to_vec();
 		}
 		if let Some((prompt, last_needle)) = last_prompt {
