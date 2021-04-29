@@ -48,10 +48,7 @@ impl ConsoleDriver {
 	fn find_prompt<'a>(&self, data: &'a [u8]) -> Option<(&'a str, bool)> {
 		let node_def = &self.ctx.node().meta().node_definition;
 		if let Ok(s) = std::str::from_utf8(data) {
-			debug!("detecting prompt for {:?}", node_def);
-
 			let prompt = s.lines()
-	
 				// get the last non-empty string
 				.map(|s| s.trim())
 				.filter_map(|s| if s.len() > 0 { Some(s) } else { None })
@@ -123,7 +120,7 @@ impl ConsoleDriver {
 
 			// try to find a prompt
 			let prompt_data = self.find_prompt(&cache);
-			debug!("detected prompt: {:?}", prompt_data);
+			debug!("detected prompt for {:?}: {:?}", &self.ctx.node().meta().node_definition, prompt_data);
 			prompt_data.map(|(s, b)| (s.to_owned(), b))
 		};
 
@@ -161,7 +158,10 @@ impl Stream for ConsoleDriver {
 				if let None = opt {
 					trace!("inner console connection has closed");
 				}
-				opt.map(|res| res.map(|odata| self.handle_data_chunk(odata)))
+				opt.map(|res| {
+					trace!("handling backend console chunk: {:?}", res);
+					res.map(|odata| self.handle_data_chunk(odata))
+				})
 			})
 	}
 }

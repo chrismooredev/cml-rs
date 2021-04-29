@@ -9,7 +9,6 @@ use futures::channel::mpsc::{SendError, Sender};
 use futures::{SinkExt, StreamExt};
 use log::{debug, error, trace, warn};
 use crossterm::terminal;
-use crossterm::tty::IsTty;
 
 use crate::term::BoxedDriverError;
 use crate::term::common::{ConsoleDriver, ConsoleUpdate};
@@ -116,8 +115,6 @@ pub enum RawError {
 
 impl RawTerminal {
 	pub fn new(driver: ConsoleDriver) -> RawTerminal {
-		assert!(tokio::io::stdin().is_tty(), "Attempt to initialize user terminal driver on non-stdin input");
-		
 		RawTerminal {
 			driver,
 			//to_srv,

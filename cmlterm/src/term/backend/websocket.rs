@@ -1,19 +1,17 @@
 
 use std::{fmt::Debug, pin::Pin, task::{Context, Poll}};
-use std::io;
 
 use futures::{Sink, SinkExt, Stream};
 use futures::StreamExt;
 use log::{debug, error, trace, warn};
 
 use tokio::net::TcpStream;
-use tokio::io::AsyncWrite;
 use tokio_native_tls::TlsStream;
 use tokio_tungstenite::{WebSocketStream, tungstenite};
 use native_tls::TlsConnector;
 use tokio_native_tls::native_tls;
 use tokio_native_tls::TlsConnector as TlsConnectorAsync;
-use tungstenite::error::{Error as WsError, Result as WsResult};
+use tungstenite::error::{Error as WsError};
 use tungstenite::protocol::Message;
 use tungstenite::handshake::client::Response as WsResponse;
 
@@ -125,37 +123,6 @@ impl Sink<String> for WsConsole {
 		};
 
 		result.map_err(|e| e.into())
-	}
-}
-impl tokio::io::AsyncWrite for WsConsole {
-	fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
-		match self.ws.poll_ready_unpin(cx) {
-			Poll::Ready(Ok(())) => {},
-			Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
-			Poll::Pending => return Poll::Pending,
-		}
-		
-		let msg = std::str::from_utf8(buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, "attempt to write non-UTF8 data to console"))?;
-		self.ws.start_send_unpin(Message::text(msg)).expect("ws should have been ready to receive a message");
-
-		// we consumed the whole buffer
-		Poll::Ready(Ok(buf.len()))
-	}
-	
-	fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-		self.poll_flush_unpin(cx).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-		//Pin::new(&mut self.channel).poll_flush(cx).map_err(|e| e.into())
-	}
-
-	fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
-		// Close the underlying sink. Will also send the websocket close frame.
-		let result = self.ws.poll_close_unpin(cx);
-		
-		if let Poll::Ready(Ok(())) = result {
-			self.ws_closed = true;
-		};
-
-		result.map_err(|e| io::Error::new(io::ErrorKind::Other, e))
 	}
 }
 impl std::ops::Drop for WsConsole {
