@@ -47,7 +47,11 @@ pub struct NodeCtx {
 impl NodeCtx {
 	pub fn host(&self) -> &str { &self.host }
 	pub fn user(&self) -> &str { &self.user }
+
+	/// Returns a `str` tuple of (lab_id, lab_name)
 	pub fn lab(&self) -> (&str, &str) { (&self.lab.0, &self.lab.1) }
+
+	/// Returns a `str` tuple of (node_id, node_name)
 	pub fn node(&self) -> (&str, &str) { (&self.node.0, &self.node.1) }
 	pub fn meta(&self) -> &rt::NodeDescription { &self.meta }
 
@@ -79,7 +83,7 @@ impl NodeCtx {
 			meta: node_data,
 		}))
 	}
-	pub async fn resolve_line(self, client: &CmlUser, line: Option<u64>, keys: Option<&HashMap<String, rt::key::Console>>) -> CmlResult<Result<ConsoleCtx, ConsoleSearchError>> {
+	pub async fn resolve_line(&self, client: &CmlUser, line: Option<u64>, keys: Option<&HashMap<String, rt::key::Console>>) -> CmlResult<Result<ConsoleCtx, ConsoleSearchError>> {
 		ConsoleCtx::search(client, self, line, keys).await
 	}
 }
@@ -100,8 +104,55 @@ impl ConsoleCtx {
 	pub fn line(&self) -> &u64 { &self.line }
 	pub fn uuid(&self) -> &str { &self.uuid }
 
+	/// Looks up a devices console line, reporting a useful error if none is found.
+	pub async fn find_line(client: &CmlUser, node: &NodeCtx, line: Option<u64>) -> CmlResult<Result<ConsoleCtx, ConsoleSearchError>> {
+		let keys = client.keys_console(true).await?;
+		
+		let mut node_lines = keys.into_iter()
+			.filter(|(_uuid, meta)| meta.lab_id == node.lab.0)
+			.filter(|(_uuid, meta)| meta.node_id == node.node.0)
+			.filter(|(_uuid, meta)| line.map(|line| meta.line == line).unwrap_or(true))
+			.collect::<Vec<(String, rt::key::Console)>>();
+
+		node_lines.sort_by_key(|(_, meta)| meta.line);
+
+		match node_lines.len() {
+			0 => { // 0
+				if ! node.meta.state.active() {
+					Ok(Err(ConsoleSearchError::NodeNotActive))
+				} else {
+					// check if it actually supports a console line
+					let node_defs = client.simplified_node_definitions().await?;
+					let node_def = node_defs.into_iter()
+						.find(|nd| nd.id == node.meta.node_definition)
+						.expect("Device uses unregistered node definition");
+	
+					if ! node_def.data.sim.console {
+						// This device does not support console lines
+						Ok(Err(ConsoleSearchError::Unsupported))
+					} else {
+						assert!(line.is_some(), "could not find lines on a line supporting(?) device");
+						Ok(Err(ConsoleSearchError::NoMatchingLines))
+					}
+				}
+			},
+			_ => { // 1+
+				let (uuid, meta) = node_lines.remove(0);
+	
+				// if a line was specified, then all our lines were filtered to it
+				// if no line was specified, then we use the lowest line number (we sorted above)
+	
+				Ok(Ok(ConsoleCtx {
+					node: node.clone(),
+					line: meta.line,
+					uuid: uuid.to_owned(),
+				}))
+			}
+		}
+	}
+
 	/// Searches a CML instance for a valid line
-	pub async fn search(client: &CmlUser, node: NodeCtx, line: Option<u64>, keys: Option<&HashMap<String, rt::key::Console>>) -> CmlResult<Result<ConsoleCtx, ConsoleSearchError>> {
+	pub async fn search(client: &CmlUser, node: &NodeCtx, line: Option<u64>, keys: Option<&HashMap<String, rt::key::Console>>) -> CmlResult<Result<ConsoleCtx, ConsoleSearchError>> {
 		// TODO: allow filtering by CML username?
 
 		debug!("resolved node: {:?}", node);
@@ -152,7 +203,7 @@ impl ConsoleCtx {
 				// if no line was specified, then we use the lowest line number (we sorted above)
 	
 				Ok(Ok(ConsoleCtx {
-					node,
+					node: node.clone(),
 					line: meta.line,
 					uuid: uuid.to_owned(),
 				}))

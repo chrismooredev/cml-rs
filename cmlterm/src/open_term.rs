@@ -38,16 +38,22 @@ impl SubCmdOpen {
 		let dest = &self.uuid_or_lab;
 
 		let client = auth.login().await?;
-		let keys = client.keys_console(true).await?;
 
-		// find by UUID
-		let mut dest_uuid = keys.iter()
-			.find(|(k, _)| k == &dest)
-			.map(|(k, _)| k.as_str());
-		let mut context: Option<ConsoleCtx> = None;
-
-		// find by split names
-		if let None = dest_uuid {
+		let context = if ! dest.starts_with('/') {
+			// find by UUID
+			let keys = client.keys_console(true).await?;
+			let console = keys.into_iter()
+				.find(|(k, _)| k == dest);
+			
+			match console {
+				Some((uuid, cons)) => {
+					let node = NodeCtx::search(&client, &cons.lab_id, &cons.node_id).await??;
+					Some(ConsoleCtx::new(node, cons.line, uuid))
+				},
+				None => Err(ConsoleSearchError::NoMatchingLines)?,
+			}
+		} else {
+			// find by split names
 			let split: Vec<_> = dest.split('/').collect();
 			let indiv = match split.as_slice() {
 				&["", lab, node] => Some((lab, node, None)),
@@ -56,25 +62,37 @@ impl SubCmdOpen {
 			};
 
 			if let Some((lab_desc, node_desc, line)) = indiv {
-				let node = NodeCtx::search(&client, lab_desc, node_desc).await?;
-				
-				let node: NodeCtx = match node {
-					Ok(nc) => nc,
-					Err(nse) => return Err(nse.into()),
-				};
-
+				let node = NodeCtx::search(&client, lab_desc, node_desc).await??;
 				let line: Option<u64> = line.map(|s| s.parse().expect("Unable to parse line as number"));
-				let console = node.resolve_line(&client, line, Some(&keys)).await?;
 
-				let console: ConsoleCtx = match console {
-					Ok(cc) => cc,
-					Err(cse) => return Err(cse.into()),
-				};
+				match ConsoleCtx::find_line(&client, &node, line).await? {
+					Ok(ctx) => Some(ctx),
+					Err(ConsoleSearchError::NodeNotActive) if self.boot => {
+						eprint!("Node is currently {}. Will connect once booted...", node.meta().state);
+						client.lab_node_start(node.lab().0, node.node().0).await?;
 
-				dest_uuid = Some(keys.get_key_value(console.uuid()).unwrap().0.as_ref());
-				context = Some(console);
+						loop {
+							tokio::time::sleep(Duration::from_secs(1)).await;
+
+							let ctx = ConsoleCtx::find_line(&client, &node, line).await?;
+							match ctx {
+								Ok(ctx) => {
+									eprintln!(""); // finish dots
+									break Some(ctx);
+								},
+								_ => {
+									eprint!(".");
+								},
+							}
+						}
+					},
+					Err(e) => Err(e)?,
+				}
+			} else {
+				// show usage?
+				todo!("please specify /<lab id or name>/<node id or name>/[line num = 0]");
 			}
-		}
+		};
 
 		if let Some(ctx) = context {
 			use futures::stream::StreamExt;
@@ -97,16 +115,7 @@ impl SubCmdOpen {
 		} else {
 			todo!("no console device found for descriptor");
 		}
-/*
-		if let Some(uuid) = dest_uuid {
-			debug!("attemping to open console connection on {:?} to UUID {:?}", &auth.host, &uuid);
-			self.open_terminal(&auth.host, &uuid).await;
-		} else {
-			eprintln!("Unable to find device by path or invalid UUID: {:?}", dest);
-		}
-		
-		debug!("closed terminal");
-*/
+
 		Ok(())
 	}
 }

@@ -254,7 +254,7 @@ impl SubCmdList {
 	
 	fn context<'a>(&'a self, client: &'a CmlUser) -> ListingContext<'a> {
 		let listing_type = match (self.vnc, self.links) {
-			(true, true) => panic!("Not possible because of clap argument parsing conflicts"),
+			(true, true) => unreachable!("Not possible because of clap argument parsing conflicts"),
 			(true, false) => ListType::VNC,
 			(false, true) => ListType::Link,
 			(false, false) => ListType::Console,
