@@ -309,6 +309,122 @@ impl CmlUser {
 		}
 	}
 
+	pub async fn lab_node_state(&self, lab_id: &str, node_id: &str) -> RResult<Option<rt::State>> {
+		#[derive(Serialize, Deserialize)]
+		struct StateResponse {
+			state: rt::State,
+		}
+
+		let resp = self.get_v0(format_args!("/labs/{}/nodes/{}/state", lab_id, node_id))
+			.send().await?;
+		let endpoint = resp.url().path().to_owned();
+		let rresp = RawApiResponse::extract(resp).await?;
+
+		match rresp {
+			(200, RawApiResponse::Json(j)) => {
+				match serde_json::from_value::<StateResponse>(j.clone()) {
+					Ok(t) => Ok(Some(t.state)),
+					Err(sje) => Err(ApiError::new(endpoint, ApiErrorType::JsonDecode("Unable to read JSON response as a proper type".into(), j.to_string(), sje)).into()),
+				}
+			},
+			(404, RawApiResponse::Json(j)) => {
+				match serde_json::from_value::<BadRequest>(j.clone()) {
+					Ok(t) if t.description.starts_with("Lab not found: ") => Ok(None),
+					Ok(t) if t.description.starts_with("Node not found: ") => Ok(None),
+					_ => Err(ApiError::new(endpoint, ApiErrorType::BadResponse("Bad response from server for 404".into(), j.to_string())).into())
+				}
+			},
+			(status @ _, resp @ _) => Err(ApiError::new(endpoint, ApiErrorType::BadResponse(format!("Bad response for status {}", status), format!("{:?}", resp))).into()),
+		}
+	}
+	pub async fn lab_node_start(&self, lab_id: &str, node_id: &str) -> RResult<Option<rt::State>> {
+		#[derive(Serialize, Deserialize)]
+		struct StateResponse {
+			state: rt::State,
+		}
+
+		let resp = self.put_v0(format_args!("/labs/{}/nodes/{}/state/start", lab_id, node_id))
+			.send().await?;
+		let endpoint = resp.url().path().to_owned();
+		let rresp = RawApiResponse::extract(resp).await?;
+
+		match rresp {
+			(200, RawApiResponse::Json(j)) => {
+				match serde_json::from_value::<Option<StateResponse>>(j.clone()) {
+					Ok(t) => Ok(t.map(|s| s.state)),
+					Err(sje) => Err(ApiError::new(endpoint, ApiErrorType::JsonDecode("Unable to read JSON response as a proper type".into(), j.to_string(), sje)).into()),
+				}
+			},
+			(404, RawApiResponse::Json(j)) => {
+				match serde_json::from_value::<BadRequest>(j.clone()) {
+					Ok(t) if t.description.starts_with("Lab not found: ") => Ok(None),
+					Ok(t) if t.description.starts_with("Node not found: ") => Ok(None),
+					_ => Err(ApiError::new(endpoint, ApiErrorType::BadResponse("Bad response from server for 404".into(), j.to_string())).into())
+				}
+			},
+			(status @ _, resp @ _) => Err(ApiError::new(endpoint, ApiErrorType::BadResponse(format!("Bad response for status {}", status), format!("{:?}", resp))).into()),
+		}
+	}
+	pub async fn lab_node_stop(&self, lab_id: &str, node_id: &str) -> RResult<Option<()>> {
+		#[derive(Serialize, Deserialize)]
+		struct StateResponse {
+			state: rt::State,
+		}
+
+		let resp = self.put_v0(format_args!("/labs/{}/nodes/{}/state/stop", lab_id, node_id))
+			.send().await?;
+		let endpoint = resp.url().path().to_owned();
+		let rresp = RawApiResponse::extract(resp).await?;
+
+		match rresp {
+			(200, RawApiResponse::Json(j)) => {
+				match serde_json::from_value::<serde_json::Value>(j.clone()) {
+					Ok(serde_json::Value::Null) => Ok(Some(())),
+					Ok(_) => Err(ApiError::new(endpoint, ApiErrorType::BadResponse("Expected JSON with null value, received something else".into(), j.to_string())).into()),
+					Err(sje) => Err(ApiError::new(endpoint, ApiErrorType::JsonDecode("Unable to read JSON response as a proper type".into(), j.to_string(), sje)).into()),
+				}
+			},
+			(404, RawApiResponse::Json(j)) => {
+				match serde_json::from_value::<BadRequest>(j.clone()) {
+					Ok(t) if t.description.starts_with("Lab not found: ") => Ok(None),
+					Ok(t) if t.description.starts_with("Node not found: ") => Ok(None),
+					_ => Err(ApiError::new(endpoint, ApiErrorType::BadResponse("Bad response from server for 404".into(), j.to_string())).into())
+				}
+			},
+			(status @ _, resp @ _) => Err(ApiError::new(endpoint, ApiErrorType::BadResponse(format!("Bad response for status {}", status), format!("{:?}", resp))).into()),
+		}
+	}
+
+	pub async fn lab_node_keys_console(&self, lab_id: &str, node_id: &str, line: Option<u64>) -> RResult<Option<String>> {
+		let resp = self.get_v0(format_args!("/labs/{}/nodes/{}/keys/console{}", lab_id, node_id, match line {
+			Some(l) => format!("?line={}", l),
+			None => format!(""),
+		}))
+		.send().await?;
+		let endpoint = resp.url().path().to_owned();
+		let rresp = RawApiResponse::extract(resp).await?;
+
+		match rresp {
+			(200, RawApiResponse::Json(j)) => {
+				// if it can't find something, it will error - not return null/etc
+				match serde_json::from_value::<String>(j.clone()) {
+					Ok(t) => Ok(Some(t)),
+					Err(sje) => Err(ApiError::new(endpoint, ApiErrorType::JsonDecode("Unable to read JSON response as a proper type".into(), j.to_string(), sje)).into()),
+				}
+			},
+			(400 | 404 | 500, RawApiResponse::Json(j)) => {
+				match serde_json::from_value::<BadRequest>(j.clone()) {
+					Ok(t) if t.description.starts_with("Lab not found: ") => Ok(None),
+					Ok(t) if t.description.starts_with("Serial port does not exist on node: ") => Ok(None),
+					// actually node not found
+					Ok(t) if t.description.contains("encountered an unexpected error. Please report this problem to support.") => Ok(None),
+					_ => Err(ApiError::new(endpoint, ApiErrorType::BadResponse(format!("Bad response from server for {}", rresp.0), j.to_string())).into())
+				}
+			},
+			(status @ _, resp @ _) => Err(ApiError::new(endpoint, ApiErrorType::BadResponse(format!("Bad response for status {}", status), format!("{:?}", resp))).into()),
+		}
+	}
+
 	pub async fn lab_topology(&self, lab_id: &str, include_configurations: bool) -> RResult<Option<rt::LabTopology>> {
 		let resp = self.get_v0(format_args!("/labs/{}/topology?exclude_configurations={}", lab_id, !include_configurations))
 			.send().await?;
