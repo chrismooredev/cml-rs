@@ -9,6 +9,7 @@ use thiserror::Error;
 use futures::channel::mpsc::{SendError, Sender};
 use futures::{SinkExt, StreamExt};
 use log::{debug, error, trace, warn};
+use colored::Colorize;
 use crossterm::terminal;
 use crossterm::tty::IsTty;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, Event, EventStream};
@@ -41,6 +42,8 @@ pub struct UserTerminal<E> {
 	driver: ConsoleDriver<E>,
 	//to_srv: Receiver<TermMsg>,
 	meta: UserMeta,
+
+	term_is_raw: bool
 }
 
 /// Contains the runtime information needed to drive the terminal state/IO
@@ -52,9 +55,8 @@ struct UserMeta {
 	//srv_send: Sender<TermMsg>,
 }
 impl UserMeta {
-	fn handle_update<E: Send + Sync + std::fmt::Debug + std::error::Error>(&self, stdout: &mut StdoutLock, update: ConsoleUpdate) -> Result<(), TtyError<E>> {
-		let ConsoleUpdate { last_chunk, last_prompt, was_first } = update;
-		let mut data = last_chunk.clone();
+		let ConsoleUpdate { last_chunk, last_prompt, was_first, cache_ref } = update;
+		let mut data = last_chunk;
 
 		// strip double-newline that some terminals do on start
 		if stdout.is_tty() && was_first && data.starts_with(b"\r\n") {
@@ -63,24 +65,50 @@ impl UserMeta {
 		if let Some((prompt, last_needle)) = last_prompt {
 			// if terminal coloring is enabled, color the prompt
 			if colored::control::SHOULD_COLORIZE.should_colorize() && last_needle {
-				let d = data.rsplit(|c| *c == b'\r' || *c == b'\n').next();
-				if let Some(s) = d {
-					if let Ok(dataend) = String::from_utf8(s.to_vec()) {
-						use colored::*;
-						assert_eq!(prompt, dataend.trim(), "received prompt (at end of line) and trimmed line are not the same");
-						assert!(data.ends_with(dataend.as_bytes()));
-						debug!("colorizing prompt ({:?})", dataend);
-						
-						// truncate string to before the colored section
-						data.truncate(data.len() - dataend.len());
+				let cache = cache_ref.try_borrow().expect("there to be nothing borrowing this");
+				assert!(cache.ends_with(&data));
+				match (String::from_utf8(data.clone()), std::str::from_utf8(&cache)) {
+					(Ok(chunk), Ok(cache)) => {
+						assert!(cache.trim_end().ends_with(&prompt), "data cache doesn't contain prompt despite reporting so");
 
-						// reappend string, with color
-						data.extend_from_slice(format!("{}", dataend.red()).as_bytes());
+						// find the last instance of our prompt
+						match chunk.rfind(&prompt) {
+							Some(i) => {
+								// last chunk contains whole prompt
+								let prompt = &chunk[i..];
 
-						// TODO: if on IOS, color hostname/config prompts differently
-					}
+								// truncate to before colored section, then reappend colored string
+								data.truncate(data.len() - prompt.len());
+								data.extend_from_slice(format!("{}", prompt.red()).as_bytes());
+								//@ TODO: if on IOS, color hostname/config prompts differently?
+							},
+							None => {
+								// last chunk contains partial prompt
+								assert!(prompt.ends_with(chunk.trim_end()), "chunk containing partial prompt does not end with prompt despite reporting so");
+
+								// find number of chars we have to reach into the cache for
+
+								// prompt_length = prompt.len() with optional added trailing whitespace
+								let prompt_index = cache.rfind(&prompt).unwrap();
+								let prompt_length = cache.len() - prompt_index;
+
+								// append some backspaces to chunk
+								assert!(prompt_length > chunk.len());
+								let needed_backspace = prompt_length - chunk.len();
+								data.extend_from_slice(&vec![AsciiChar::BackSpace.as_byte(); needed_backspace]);
+
+								// append a colored prompt to chunk
+								data.extend_from_slice(cache[prompt_index..].red().to_string().as_bytes());
+							}
+						}
+					},
+					_ => {
+						// one or both not UTF8, skip prompt colorization
+					},
 				}
 			}
+
+			// set terminal title
 			if *self.last_set_prompt.borrow() != prompt {
 				self.set_title(stdout, prompt)?;
 			}
@@ -213,14 +241,15 @@ impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> UserTermina
 				auto_prompt_ms: 1000,
 				//srv_send,
 			},
+			term_is_raw: false,
 		}
 	}
 
 	/// Runs drives the console based off the current process' stdin and stdout.
 	/// Recieves events from stdin in a loop, and passes it to the console.
 	/// Data from the console is sent back to stdout, setting the terminal's title as appropriate.
-	pub async fn run(self) -> anyhow::Result<()> {
-		let UserTerminal { driver, meta } = self;
+	pub async fn run(mut self) -> anyhow::Result<()> {
+		let UserTerminal { driver, meta, term_is_raw } = &mut self;
 		let (to_console, console_queue) = futures::channel::mpsc::channel::<String>(16);
 
 		// push stdin into it
@@ -230,6 +259,8 @@ impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> UserTermina
 		let mut stdout_lock = stdio.lock();
 
 		terminal::enable_raw_mode().with_context(|| "enabling terminal's raw mode")?;
+		*term_is_raw = true;
+
 		let init_title = format!("CML - {}", driver.context().node().node().1);
 		meta.set_title(&mut stdout_lock, init_title)?;
 		
@@ -265,8 +296,16 @@ impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> UserTermina
 	}
 }
 
-//impl ConsoleDriver for TtyTerminal { }
-
+impl std::ops::Drop for UserTerminal {
+	fn drop(&mut self) {
+		if self.term_is_raw {
+			self.term_is_raw = false;
+			if let Err(e) = terminal::disable_raw_mode().with_context(|| "disabling terminal's raw mode") {
+				eprintln!("{:?}", e);
+			}
+		}
+	}
+}
 
 /// Maps keyboard key events to a character sequence to send to a terminal.
 pub fn event_to_code(event: KeyEvent) -> Result<SmolStr, String> {

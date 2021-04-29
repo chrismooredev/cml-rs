@@ -42,8 +42,7 @@ struct UserMeta {
 	//srv_send: Sender<TermMsg>,
 }
 impl UserMeta {
-	fn handle_update<E: Send + Sync + std::fmt::Debug + std::error::Error>(&self, stdout: &mut StdoutLock, update: ConsoleUpdate) -> Result<(), RawError<E>> {
-		let ConsoleUpdate { last_chunk, last_prompt, was_first } = update;
+		let ConsoleUpdate { last_chunk, last_prompt, was_first, cache_ref } = update;
 		let mut data = last_chunk.as_slice();
 		
 		stdout.write_all(data)?;

@@ -2,16 +2,15 @@
 
 use std::fmt::Debug;
 use std::rc::Rc;
-use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures::stream::FusedStream;
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use log::{debug, error, trace, warn};
+use log::{debug, trace};
 
 use crate::terminal::ConsoleCtx;
-use crate::term::Drivable;
+use crate::term::{Drivable, KeyedCache, KeyedCacheRef};
 
 const CACHE_CAPACITY: usize = 256;
 
@@ -25,7 +24,8 @@ pub struct ConsoleDriver<E> {
 
 	/// How many data chunks we have recieved
 	received_chunks: usize,
-	data_cache: VecDeque<u8>,
+
+	data_cache: KeyedCache,
 }
 
 impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> ConsoleDriver<E> {
@@ -40,7 +40,7 @@ impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> ConsoleDriv
 
 			// connection state metadata
 			received_chunks: 0,
-			data_cache: VecDeque::with_capacity(CACHE_CAPACITY),
+			data_cache: KeyedCache::with_capacity(CACHE_CAPACITY),
 		}
 	}
 
@@ -117,18 +117,20 @@ impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> ConsoleDriv
 		self.received_chunks += 1;
 
 		// update rolling buffer
-		crate::update_chunkbuf(&mut self.data_cache, &chunk);
-		self.data_cache.make_contiguous();
-		let cache = self.data_cache.as_slices().0;
+		let cache_ref = self.data_cache.try_update(&chunk).unwrap();
+		let last_prompt = {
+			let cache = cache_ref.try_borrow().unwrap();
 
-		// try to find a prompt
-		let prompt_data = self.find_prompt(cache);
-		debug!("detected prompt: {:?}", prompt_data);
-		let last_prompt = prompt_data.map(|(s, b)| (s.to_owned(), b));
+			// try to find a prompt
+			let prompt_data = self.find_prompt(&cache);
+			debug!("detected prompt: {:?}", prompt_data);
+			prompt_data.map(|(s, b)| (s.to_owned(), b))
+		};
 
 		ConsoleUpdate {
 			last_chunk: chunk,
 			last_prompt,
+			cache_ref,
 			was_first,
 		}
 	}
@@ -139,6 +141,7 @@ pub struct ConsoleUpdate {
 	pub last_chunk: Vec<u8>,
 	pub last_prompt: Option<(String, bool)>,
 	pub was_first: bool,
+	pub cache_ref: KeyedCacheRef,
 }
 
 impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> FusedStream for ConsoleDriver<E> {
