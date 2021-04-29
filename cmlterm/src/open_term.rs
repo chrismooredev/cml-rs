@@ -30,6 +30,10 @@ pub struct SubCmdOpen {
 	#[clap(short, long)]
 	raw: bool,
 
+	/// Uses CML's SSH terminal instead of the websocket terminal the UI uses. (Experimental)
+	#[clap(short, long)]
+	ssh: bool,
+
 	/// Accepts a combination of ID or label for labs and nodes, or the console's UUID
 	#[clap(value_name = "/lab/node[/line = 0]")]
 	uuid_or_lab: String,
@@ -41,7 +45,7 @@ impl SubCmdOpen {
 
 		let client = auth.login().await?;
 
-		let context = if ! dest.starts_with('/') {
+		let context: Option<ConsoleCtx> = if ! dest.starts_with('/') {
 			// find by UUID
 			let keys = client.keys_console(true).await?;
 			let console = keys.into_iter()
@@ -49,8 +53,13 @@ impl SubCmdOpen {
 			
 			match console {
 				Some((uuid, cons)) => {
+					// refetch the UUID for this node using a validated ConsoleCtx
 					let node = NodeCtx::search(&client, &cons.lab_id, &cons.node_id).await??;
-					Some(ConsoleCtx::new(node, cons.line, uuid))
+					let ctx = ConsoleCtx::find_line(&client, &node, Some(cons.line)).await?.ok();
+					if let Some(ctx) = &ctx {
+						assert_eq!(ctx.uuid(), uuid, "validated UUID is not the same as provided UUID");
+					}
+					ctx
 				},
 				None => Err(ConsoleSearchError::NoMatchingLines)?,
 			}
@@ -102,17 +111,16 @@ impl SubCmdOpen {
 			use crate::term::frontend::types::{UserTerminal, ScriptedTerminal, RawTerminal};
 			use crate::term::Drivable;
 
-			use crate::term::backend::websocket::WsConsole;
-			//use crate::term::backend::ssh::SshConsole;
-
-			/*let stream: Box<dyn Drivable> = if true {
+			let stream: Box<dyn Drivable> = if ! self.ssh {
+				use crate::term::backend::websocket::WsConsole;
 				Box::new(WsConsole::new(&ctx).await.unwrap().fuse())
 			} else {
+				use crate::term::backend::ssh::SshConsole;
 				Box::new(SshConsole::new(&ctx, &auth).await.unwrap().fuse())
-			};*/
+			};
 
-			//let stream = SshConsole::new(&ctx, &auth).await.unwrap();
-			let stream: Box<dyn Drivable> = Box::new(WsConsole::new(&ctx).await.unwrap().fuse());
+			//let stream: Box<dyn Drivable> = Box::new(SshConsole::new(&ctx, &auth).await.unwrap().fuse());
+			//let stream: Box<dyn Drivable> = Box::new(WsConsole::new(&ctx).await.unwrap().fuse());
 			let driver = ConsoleDriver::from_connection(ctx, stream);
 			if self.raw {
 				let rt = RawTerminal::new(driver);
