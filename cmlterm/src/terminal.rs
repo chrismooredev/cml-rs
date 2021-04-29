@@ -1,7 +1,7 @@
 
 use std::collections::HashMap;
 
-use log::{debug, error, trace, warn};
+use log::{debug, error};
 use thiserror::Error;
 use cml::rest::CmlUser;
 
@@ -157,7 +157,7 @@ impl ConsoleCtx {
 
 		debug!("resolved node: {:?}", node);
 		
-		let mut owned_keys: Option<HashMap<String, rt::key::Console>> = None;
+		let owned_keys: Option<HashMap<String, rt::key::Console>>;
 
 		let keys = match keys {
 			None => {

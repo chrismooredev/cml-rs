@@ -1,50 +1,36 @@
 
-use std::{cell::{RefCell}, io::Write, str::Utf8Error, thread::JoinHandle};
-use std::io::StdoutLock;
+use std::str::Utf8Error;
+use std::thread::JoinHandle;
+use std::io::{Write, StdoutLock};
 
 use anyhow::Context;
-use futures::{FutureExt, stream::SplitStream};
 use thiserror::Error;
-use futures::channel::mpsc::{SendError, Sender};
 use futures::{SinkExt, StreamExt};
-use log::{debug, error, trace, warn};
+use futures::stream::SplitStream;
+use futures::channel::mpsc::{SendError, Sender};
+use log::{debug, error};
 use crossterm::terminal;
 
 use crate::term::BoxedDriverError;
 use crate::term::common::{ConsoleDriver, ConsoleUpdate};
 
-/// A user-driven terminal
-/// Handles setting terminal title, passing over user input, translating terminal keys, etc
-/// Can be designed so it does not terminate until the connection does
+/// A raw terminal
 ///
-/// ### Functions:
-/// * Essentially through-pipes between stdin/out and the console
-/// * Sends a form feed message to "activate" the terminal on launch
-/// * Maps common keyboard buttons/shortcuts to proper ANSI sequences
-/// * If stdout is a tty:
-///   * Update the terminal's title to the current prompt
-///   * TODO: Color prompt lines/etc?
-///   * TODO: function-key to emit commands to set term width/length ?
-/// 
-/// Contains setup data to initialize a user-terminal
+/// Essentially a pipe between the console driver and stdio
+///
+/// Note that since we do not process terminal input ourselves (only forward),
+/// a program will have to close stdin deliberately, notably, a user cannot send EOF using keystrokes
 pub struct RawTerminal {
 	driver: ConsoleDriver,
-	//to_srv: Receiver<TermMsg>,
 	meta: UserMeta,
 }
 
 /// Contains the runtime information needed to drive the terminal state/IO
-struct UserMeta {
-	/// Used to prevent writing the same prompt to the terminal multiple times over
-	last_set_prompt: RefCell<String>,
-	/// A timeout used to inject a newline if a prompt is not found upon initializing the console
-	auto_prompt_ms: u64,
-	//srv_send: Sender<TermMsg>,
-}
+struct UserMeta;
 impl UserMeta {
 	fn handle_update(&self, stdout: &mut StdoutLock, update: ConsoleUpdate) -> Result<(), RawError> {
-		let ConsoleUpdate { last_chunk, last_prompt, was_first, cache_ref } = update;
-		let mut data = last_chunk.as_slice();
+		let ConsoleUpdate { last_chunk, .. } = update;
+		let data = last_chunk.as_slice();
 		
 		stdout.write_all(data)?;
 		stdout.flush()?;
@@ -84,7 +70,6 @@ impl UserMeta {
 	}
 
 	/// Responsible for:
-	/// * Initializing the console if nothing received after X ms
 	/// * Processing updates from the console driver
 	async fn drive_output(&self, mut srv_recv: SplitStream<ConsoleDriver>, mut stdout_lock: StdoutLock<'_>) -> Result<(), RawError> {
 		
@@ -117,12 +102,7 @@ impl RawTerminal {
 	pub fn new(driver: ConsoleDriver) -> RawTerminal {
 		RawTerminal {
 			driver,
-			//to_srv,
-			meta: UserMeta {
-				last_set_prompt: RefCell::new(String::new()),
-				auto_prompt_ms: 1000,
-				//srv_send,
-			},
+			meta: UserMeta,
 		}
 	}
 
@@ -136,7 +116,7 @@ impl RawTerminal {
 		// push stdin into it
 		// write output to stdout, with some buffering
 		let stdio = std::io::stdout();
-		let mut stdout_lock = stdio.lock();
+		let stdout_lock = stdio.lock();
 
 		terminal::enable_raw_mode().with_context(|| "enabling terminal's raw mode")?;
 

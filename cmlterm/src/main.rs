@@ -23,13 +23,6 @@ enum SubCmd {
 	List(SubCmdList),
 	Open(SubCmdOpen),
 	Expose(SubCmdExpose),
-	Run(SubCmdRun),
-}
-
-#[derive(Clap)]
-struct SubCmdRun {
-	uuid: String,
-	cmds: Vec<String>,
 }
 
 async fn application() -> anyhow::Result<()> {
@@ -64,7 +57,6 @@ async fn application() -> anyhow::Result<()> {
 	match &args.subc.unwrap() {
 		SubCmd::List(list) => list.run(&auth).await?,
 		SubCmd::Open(open) => open.run(&auth).await?,
-		SubCmd::Run(_run) => todo!("running individial/batch commands non-interactively"),
 		SubCmd::Expose(expose) => expose.run(&auth.host).await,
 	}
 

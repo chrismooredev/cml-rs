@@ -19,14 +19,6 @@ macro_rules! esc {
 	};
 }
 
-fn truncate_string<'a>(s: &'a str, len: usize) -> Cow<'a, str> {
-	if s.len() > len*4 {
-		Cow::from(format!("{}<...truncated...>{}", &s[..len], &s[s.len()-len..]))
-	} else {
-		Cow::from(s)
-	}
-}
-
 pub mod expose;
 pub mod listing;
 pub mod api;

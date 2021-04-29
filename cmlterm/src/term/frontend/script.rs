@@ -6,7 +6,7 @@ use futures::{FutureExt, future::Fuse, stream::{FusedStream, SplitStream}};
 use thiserror::Error;
 use futures::channel::mpsc::{Receiver, SendError, Sender};
 use futures::{SinkExt, StreamExt};
-use log::{debug, error, trace, warn};
+use log::{debug, error, trace};
 
 use crate::api::{self, WaitMode};
 
