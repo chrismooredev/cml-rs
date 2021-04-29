@@ -18,10 +18,10 @@ function _cmlterm() {
 	local prev_word="$3"
 	
 	# re-export it for the completions binary
-	export COMP_LINE="$COMP_LINE"
-	export COMP_POINT="$COMP_POINT"
-	export COMP_TYPE="$COMP_TYPE"
-	export COMP_KEY="$COMP_KEY"
+	#export COMP_LINE="$COMP_LINE"
+	#export COMP_POINT="$COMP_POINT"
+	#export COMP_TYPE="$COMP_TYPE"
+	#export COMP_KEY="$COMP_KEY"
 
 	local BINNAME="__cmlterm_shell_completion"
 	local binpath="$BINNAME"
@@ -34,14 +34,22 @@ function _cmlterm() {
 	fi # hopefully it's globally available... not much more we can try
 
 	if [ -z "$COMP_DEBUGFILE" ] ; then
-		COMP_DEBUGFILE=/dev/null
+		local COMP_DEBUGFILE=/dev/null
+	elif [ -d "$COMP_DEBUGFILE" ] ; then
+		echo -e "\nWarning: \$COMP_DEBUGFILE is set to a directory. Sending completions debug output to /dev/null"
+		local COMP_DEBUGFILE=/dev/null
 	fi
 
 	readarray -d $'\0' COMPREPLY < <(
 		for i in "${COMP_WORDS[@]}" ; do
 			echo -n "$i"
 			echo -ne '\0'
-		done | "$binpath" --wordbreaks "$COMP_WORDBREAKS" --exe "$exe" --word "$word" --prev-word "$3" 2>"$COMP_DEBUGFILE"
+		done | \
+			COMP_LINE="$COMP_LINE" \
+			COMP_POINT="$COMP_POINT" \
+			COMP_TYPE="$COMP_TYPE" \
+			COMP_KEY="$COMP_KEY" \
+			"$binpath" --wordbreaks "$COMP_WORDBREAKS" --exe "$exe" --word "$word" --prev-word "$3" 2>"$COMP_DEBUGFILE"
 	)
 
 	if [[ "${#COMPREPLY[@]}" -eq 0 && -z "$CML_HOST" && -z "$CML_USER" && ( -z "$CML_PASS" || -z "$CML_PASS64") ]] ; then
