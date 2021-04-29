@@ -79,6 +79,8 @@ impl UserMeta {
 								// last chunk contains whole prompt
 								let prompt = &chunk[i..];
 
+								debug!("coloring prompt that is within a whole chunk");
+
 								// truncate to before colored section, then reappend colored string
 								data.truncate(data.len() - prompt.len());
 								data.extend_from_slice(format!("{}", prompt.red()).as_bytes());
@@ -88,16 +90,14 @@ impl UserMeta {
 								// last chunk contains partial prompt
 								assert!(prompt.ends_with(chunk.trim_end()), "chunk containing partial prompt does not end with prompt despite reporting so");
 
+								debug!("######## coloring prompt that is within a partial chunk");
+
 								// find number of chars we have to reach into the cache for
 
 								// prompt_length = prompt.len() with optional added trailing whitespace
 								let prompt_index = cache.rfind(&prompt).unwrap();
-								let prompt_length = cache.len() - prompt_index;
 
-								// append some backspaces to chunk
-								assert!(prompt_length > chunk.len());
-								let needed_backspace = prompt_length - chunk.len();
-								data.extend_from_slice(&vec![AsciiChar::BackSpace.as_byte(); needed_backspace]);
+								data.push(AsciiChar::CarriageReturn.as_byte());
 
 								// append a colored prompt to chunk
 								data.extend_from_slice(cache[prompt_index..].red().to_string().as_bytes());
