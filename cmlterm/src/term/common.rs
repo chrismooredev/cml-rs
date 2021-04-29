@@ -17,9 +17,9 @@ const CACHE_CAPACITY: usize = 256;
 /// Responsible for encapuslating and maintaining a connection to a CML device
 /// Primary use case is deliniating data from the device, and signaling if a prompt is ready/has been found
 #[derive(Debug)]
-pub struct ConsoleDriver<E> {
+pub struct ConsoleDriver {
 	ctx: Rc<ConsoleCtx>,
-	conn: Box<dyn Drivable<E>>,
+	conn: Box<dyn Drivable>,
 	// connection state metadata
 
 	/// How many data chunks we have recieved
@@ -28,12 +28,12 @@ pub struct ConsoleDriver<E> {
 	data_cache: KeyedCache,
 }
 
-impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> ConsoleDriver<E> {
+impl ConsoleDriver {
 	// Getters
 	pub fn context(&self) -> &ConsoleCtx { &self.ctx }
 
 	/// Initializes the driver so it can manage a connection and provide status updates on the prompt context/etc
-	pub fn from_connection(console: ConsoleCtx, conn: Box<dyn Drivable<E>>) -> ConsoleDriver<E> {
+	pub fn from_connection(console: ConsoleCtx, conn: Box<dyn Drivable>) -> ConsoleDriver {
 		ConsoleDriver {
 			ctx: Rc::new(console),
 			conn,
@@ -144,13 +144,13 @@ pub struct ConsoleUpdate {
 	pub cache_ref: KeyedCacheRef,
 }
 
-impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> FusedStream for ConsoleDriver<E> {
+impl FusedStream for ConsoleDriver {
 	fn is_terminated(&self) -> bool {
 		self.conn.is_terminated()
 	}
 }
-impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> Stream for ConsoleDriver<E> {
-	type Item = Result<ConsoleUpdate, E>;
+impl Stream for ConsoleDriver {
+	type Item = Result<ConsoleUpdate, crate::term::BoxedDriverError>;
 	fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
 
 		// bubble pending/error
@@ -166,8 +166,8 @@ impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> Stream for 
 	}
 }
 
-impl<E> Sink<String> for ConsoleDriver<E> {
-	type Error = E;
+impl Sink<String> for ConsoleDriver {
+	type Error = crate::term::BoxedDriverError;
 	fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
 		self.conn.poll_ready_unpin(cx)
 	}

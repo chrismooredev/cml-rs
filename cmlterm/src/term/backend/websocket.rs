@@ -1,11 +1,13 @@
 
 use std::{fmt::Debug, pin::Pin, task::{Context, Poll}};
+use std::io;
 
 use futures::{Sink, SinkExt, Stream};
 use futures::StreamExt;
 use log::{debug, error, trace, warn};
 
 use tokio::net::TcpStream;
+use tokio::io::AsyncWrite;
 use tokio_native_tls::TlsStream;
 use tokio_tungstenite::{WebSocketStream, tungstenite};
 use native_tls::TlsConnector;
@@ -15,6 +17,7 @@ use tungstenite::error::{Error as WsError, Result as WsResult};
 use tungstenite::protocol::Message;
 use tungstenite::handshake::client::Response as WsResponse;
 
+use crate::term::BoxedDriverError;
 use crate::terminal::ConsoleCtx;
 
 /// A websocket wrapper to handle our use case, communicating with CML console lines
@@ -68,7 +71,7 @@ impl WsConsole {
 }
 
 impl Stream for WsConsole {
-	type Item = WsResult<Vec<u8>>;
+	type Item = Result<Vec<u8>, BoxedDriverError>;
 	fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
 		// only have to worry about text messages
 		// tokio-tungstenite will handle websocket ping/pongs and close messages
@@ -82,7 +85,7 @@ impl Stream for WsConsole {
 					return Poll::Ready(None);
 				},
 				Poll::Ready(Some(Err(e))) => {
-					return Poll::Ready(Some(Err(e)));
+					return Poll::Ready(Some(Err(e.into())));
 				},
 				Poll::Ready(Some(Ok(Message::Binary(odata)))) => {
 					return Poll::Ready(Some(Ok(odata)));
@@ -99,19 +102,19 @@ impl Stream for WsConsole {
 	}
 }
 impl Sink<String> for WsConsole {
-	type Error = WsError;
+	type Error = BoxedDriverError;
 	fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
 		// prepare to send a value
 		// producers must receive Ready(Ok(())) before calling .send
-		self.ws.poll_ready_unpin(cx)
+		self.ws.poll_ready_unpin(cx).map_err(|e| e.into())
 	}
 	fn start_send(mut self: Pin<&mut Self>, item: String) -> Result<(), Self::Error> {
 		// send data to server
-		self.ws.start_send_unpin(Message::Text(item))
+		self.ws.start_send_unpin(Message::Text(item)).map_err(|e| e.into())
 	}
 	fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
 		// flush data to server
-		self.ws.poll_flush_unpin(cx)
+		self.ws.poll_flush_unpin(cx).map_err(|e| e.into())
 	}
 	fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
 		// Close the underlying sink. Will also send the websocket close frame.
@@ -121,7 +124,38 @@ impl Sink<String> for WsConsole {
 			self.ws_closed = true;
 		};
 
-		result
+		result.map_err(|e| e.into())
+	}
+}
+impl tokio::io::AsyncWrite for WsConsole {
+	fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
+		match self.ws.poll_ready_unpin(cx) {
+			Poll::Ready(Ok(())) => {},
+			Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
+			Poll::Pending => return Poll::Pending,
+		}
+		
+		let msg = std::str::from_utf8(buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, "attempt to write non-UTF8 data to console"))?;
+		self.ws.start_send_unpin(Message::text(msg)).expect("ws should have been ready to receive a message");
+
+		// we consumed the whole buffer
+		Poll::Ready(Ok(buf.len()))
+	}
+	
+	fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+		self.poll_flush_unpin(cx).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+		//Pin::new(&mut self.channel).poll_flush(cx).map_err(|e| e.into())
+	}
+
+	fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+		// Close the underlying sink. Will also send the websocket close frame.
+		let result = self.ws.poll_close_unpin(cx);
+		
+		if let Poll::Ready(Ok(())) = result {
+			self.ws_closed = true;
+		};
+
+		result.map_err(|e| io::Error::new(io::ErrorKind::Other, e))
 	}
 }
 impl std::ops::Drop for WsConsole {

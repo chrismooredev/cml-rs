@@ -17,6 +17,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, Event, EventStream};
 use ascii::AsciiChar;
 use smol_str::SmolStr;
 
+use crate::term::BoxedDriverError;
 use crate::term::common::{ConsoleDriver, ConsoleUpdate};
 
 const CTRL_D: KeyEvent = KeyEvent {
@@ -38,8 +39,8 @@ const CTRL_D: KeyEvent = KeyEvent {
 ///   * TODO: function-key to emit commands to set term width/length ?
 /// 
 /// Contains setup data to initialize a user-terminal
-pub struct UserTerminal<E> {
-	driver: ConsoleDriver<E>,
+pub struct UserTerminal {
+	driver: ConsoleDriver,
 	//to_srv: Receiver<TermMsg>,
 	meta: UserMeta,
 
@@ -55,6 +56,7 @@ struct UserMeta {
 	//srv_send: Sender<TermMsg>,
 }
 impl UserMeta {
+	fn handle_update(&self, stdout: &mut StdoutLock, update: ConsoleUpdate) -> Result<(), TtyError> {
 		let ConsoleUpdate { last_chunk, last_prompt, was_first, cache_ref } = update;
 		let mut data = last_chunk;
 
@@ -174,7 +176,7 @@ impl UserMeta {
 	/// Responsible for:
 	/// * Initializing the console if nothing received after X ms
 	/// * Processing updates from the console driver
-	async fn drive_output<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static>(&self, mut srv_send: Sender<String>, srv_recv: SplitStream<ConsoleDriver<E>>, mut stdout_lock: StdoutLock<'_>) -> Result<(), TtyError<E>> {
+	async fn drive_output(&self, mut srv_send: Sender<String>, srv_recv: SplitStream<&mut ConsoleDriver>, mut stdout_lock: StdoutLock<'_>) -> Result<(), TtyError> {
 		// used to track if our console has been "initialized" - have we received data?
 		let mut initialized = false;
 		let slp = tokio::time::sleep(Duration::from_millis(self.auto_prompt_ms)).fuse();
@@ -201,7 +203,7 @@ impl UserMeta {
 					Some(update) => {
 						trace!("received update from console");
 						initialized = true;
-						self.handle_update(&mut stdout_lock, update.map_err(|e| Box::new(e))?)?;
+						self.handle_update(&mut stdout_lock, update?)?;
 					},
 					None => {
 						debug!("drive output done - received end of stream");
@@ -218,19 +220,19 @@ impl UserMeta {
 }
 
 #[derive(Debug, Error)]
-pub enum TtyError<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> {
+pub enum TtyError {
 	#[error("A terminal IO error occured.")]
 	Io(#[from] std::io::Error),
 	#[error("A console connection error occured.")]
-	Connection(#[from] Box<E>),
+	Connection(#[from] BoxedDriverError),
 	#[error("An error occured writing terminal title.")]
 	Terminal(#[from] crossterm::ErrorKind),
 	#[error("Send buffer has overfilled")]
 	Buffer(#[from] SendError),
 }
 
-impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> UserTerminal<E> {
-	pub fn new(driver: ConsoleDriver<E>) -> UserTerminal<E> {
+impl UserTerminal {
+	pub fn new(driver: ConsoleDriver) -> UserTerminal {
 		assert!(tokio::io::stdin().is_tty(), "Attempt to initialize user terminal driver on non-stdin input");
 		
 		UserTerminal {
@@ -282,12 +284,12 @@ impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> UserTermina
 
 			srv_send_raw.close().await?;
 			debug!("to_srv_driver done, srv_send_raw closed");
-			Result::<_, E>::Ok(())
+			Result::<_, BoxedDriverError>::Ok(())
 		};
 
 		debug!("waiting for tty futures to complete");
 
-		let (handler, recv, driver): (Result<(), SendError>, Result<(), TtyError<E>>, Result<(), E>) = futures::future::join3(stdin_handler, srv_recv, to_srv_driver).await;
+		let (handler, recv, driver): (Result<(), SendError>, Result<(), TtyError>, Result<(), BoxedDriverError>) = futures::future::join3(stdin_handler, srv_recv, to_srv_driver).await;
 		handler?; recv?; driver?;
 
 		debug!("tty futures have finished.");

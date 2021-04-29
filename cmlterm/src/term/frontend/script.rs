@@ -10,14 +10,15 @@ use log::{debug, error, trace, warn};
 
 use crate::api::{self, WaitMode};
 
+use crate::term::BoxedDriverError;
 use crate::term::common::{ConsoleDriver, ConsoleUpdate};
 
 #[derive(Debug)]
-struct RecvState<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> {
+struct RecvState{
 	/// Incoming commands. May be closed if the server closes.
 	stdin_handler: Receiver<ScriptCmd>,
 	/// Output data from the console
-	from_console: futures::stream::Fuse<SplitStream<ConsoleDriver<E>>>,
+	from_console: futures::stream::Fuse<SplitStream<ConsoleDriver>>,
 	/// Data sent to the console. A TermMsg::Close should be sent when stdin_handler closes.
 	to_console: Sender<String>,
 
@@ -34,8 +35,8 @@ struct RecvState<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static>
 	/// Used to determine if an initialization message was sent
 	sent_init: bool,
 }
-impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> RecvState<E> {
-	fn new(stdin_handler: Receiver<ScriptCmd>, to_console: Sender<String>, srv_recv: SplitStream<ConsoleDriver<E>>) -> RecvState<E> {
+impl RecvState {
+	fn new(stdin_handler: Receiver<ScriptCmd>, to_console: Sender<String>, srv_recv: SplitStream<ConsoleDriver>) -> RecvState {
 		RecvState {
 			stdin_handler,
 			from_console: srv_recv.fuse(),
@@ -231,8 +232,8 @@ impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> RecvState<E
 ///   * TODO: function-key to emit commands to set term width/length ?
 /// 
 /// Contains setup data to initialize a user-terminal
-pub struct ScriptedTerminal<E> {
-	driver: ConsoleDriver<E>,
+pub struct ScriptedTerminal {
+	driver: ConsoleDriver,
 	//to_srv: Receiver<TermMsg>,
 	meta: ScriptedMeta,
 }
@@ -316,8 +317,8 @@ pub enum TtyError<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static
 	Buffer(#[from] SendError),
 }
 
-impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> ScriptedTerminal<E> {
-	pub fn new(driver: ConsoleDriver<E>) -> ScriptedTerminal<E> {
+impl ScriptedTerminal {
+	pub fn new(driver: ConsoleDriver) -> ScriptedTerminal {
 		ScriptedTerminal {
 			driver,
 			//to_srv,
@@ -341,7 +342,7 @@ impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> ScriptedTer
 
 		// handle just prompted info for now
 
-		async fn fmain_loop<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static>(stdin_handler: Receiver<ScriptCmd>, to_console: Sender<String>, srv_recv: SplitStream<ConsoleDriver<E>>) -> anyhow::Result<()> {
+		async fn fmain_loop(stdin_handler: Receiver<ScriptCmd>, to_console: Sender<String>, srv_recv: SplitStream<ConsoleDriver>) -> anyhow::Result<()> {
 			let mut state = RecvState::new(stdin_handler, to_console, srv_recv);
 
 			loop {
@@ -408,12 +409,12 @@ impl<E: Send + Sync + std::fmt::Debug + std::error::Error + 'static> ScriptedTer
 
 			srv_send_raw.close().await?;
 			debug!("to_srv_driver done, srv_send_raw closed");
-			Result::<_, E>::Ok(())
+			Result::<_, BoxedDriverError>::Ok(())
 		};
 
 		debug!("waiting for scripted futures to complete");
 
-		let (main_loop_res, driver): (anyhow::Result<()>, Result<(), E>) = futures::future::join(main_loop, to_srv_driver).await;
+		let (main_loop_res, driver): (anyhow::Result<()>, Result<(), BoxedDriverError>) = futures::future::join(main_loop, to_srv_driver).await;
 		
 		main_loop_res?; driver?;
 

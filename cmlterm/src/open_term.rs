@@ -1,9 +1,11 @@
 
+use std::time::Duration;
+
 use clap::Clap;
 use crossterm::tty::IsTty;
 
 use cml::rest::Authenticate;
-use crate::terminal::{NodeCtx, ConsoleCtx};
+use crate::terminal::{ConsoleCtx, ConsoleSearchError, NodeCtx};
 use crate::TerminalError;
 
 
@@ -28,7 +30,7 @@ pub struct SubCmdOpen {
 	#[clap(short, long)]
 	raw: bool,
 
-	/// Accepts a combination of ID or label for labs and nodes
+	/// Accepts a combination of ID or label for labs and nodes, or the console's UUID
 	#[clap(value_name = "/lab/node[/line = 0]")]
 	uuid_or_lab: String,
 }
@@ -96,12 +98,22 @@ impl SubCmdOpen {
 
 		if let Some(ctx) = context {
 			use futures::stream::StreamExt;
-			use crate::term::backend::websocket::WsConsole;
 			use crate::term::common::ConsoleDriver;
 			use crate::term::frontend::types::{UserTerminal, ScriptedTerminal, RawTerminal};
+			use crate::term::Drivable;
 
-			let stream = WsConsole::new(&ctx).await.unwrap();
-			let driver = ConsoleDriver::from_connection(ctx, Box::new(stream.fuse()));
+			use crate::term::backend::websocket::WsConsole;
+			//use crate::term::backend::ssh::SshConsole;
+
+			/*let stream: Box<dyn Drivable> = if true {
+				Box::new(WsConsole::new(&ctx).await.unwrap().fuse())
+			} else {
+				Box::new(SshConsole::new(&ctx, &auth).await.unwrap().fuse())
+			};*/
+
+			//let stream = SshConsole::new(&ctx, &auth).await.unwrap();
+			let stream: Box<dyn Drivable> = Box::new(WsConsole::new(&ctx).await.unwrap().fuse());
+			let driver = ConsoleDriver::from_connection(ctx, stream);
 			if self.raw {
 				let rt = RawTerminal::new(driver);
 				rt.run().await.expect("an error within the raw stdin-driven terminal program");
