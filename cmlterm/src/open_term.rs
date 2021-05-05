@@ -2,6 +2,7 @@
 use std::time::Duration;
 
 use clap::Clap;
+use cml::rest_types::State;
 use crossterm::tty::IsTty;
 
 use cml::rest::Authenticate;
@@ -79,10 +80,15 @@ impl SubCmdOpen {
 				match ConsoleCtx::find_line(&client, &node, line).await? {
 					Ok(ctx) => Some(ctx),
 					Err(ConsoleSearchError::NodeNotActive) if self.boot => {
-						eprint!("Node is currently {}. Will connect once booted...", node.meta().state);
+						let is_tty = std::io::stdout().is_tty();
+
+						eprint!("Node /{}/{} is currently {}. Will connect once booted...", node.lab().1, node.node().1, node.meta().state);
+
+						let _res = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(&format!("CML Booting {}", node.node().1)));
+
 						client.lab_node_start(node.lab().0, node.node().0).await?;
 
-						loop {
+						let ctx = loop {
 							tokio::time::sleep(Duration::from_secs(1)).await;
 
 							let ctx = ConsoleCtx::find_line(&client, &node, line).await?;
@@ -91,11 +97,27 @@ impl SubCmdOpen {
 									eprintln!(""); // finish dots
 									break Some(ctx);
 								},
-								_ => {
+								Err(ConsoleSearchError::NodeNotActive) => eprint!("."),
+								Err(e @ _) => Err(e)?,
+							}
+						};
+
+						if ! is_tty {
+							eprint!("Node has been started. Script waiting for it to be fully booted...");
+							loop {
+								tokio::time::sleep(Duration::from_secs(1)).await;
+	
+								let state = client.lab_node_state(node.lab().0, node.node().0).await?.expect("node was deleted");
+								if state == State::Booted {
+									eprintln!("");
+									break;
+								} else {
 									eprint!(".");
-								},
+								}
 							}
 						}
+
+						ctx
 					},
 					Err(e) => Err(e)?,
 				}
