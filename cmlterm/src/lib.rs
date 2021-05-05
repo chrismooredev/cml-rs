@@ -1,5 +1,5 @@
 
-use std::{borrow::Cow, collections::VecDeque};
+use std::collections::VecDeque;
 use thiserror::Error;
 use native_tls::TlsConnector;
 use tokio::net::TcpStream;
@@ -93,5 +93,12 @@ fn update_chunkbuf(buffer: &mut VecDeque<u8>, chunk: &[u8]) {
 	}
 
 	buffer.make_contiguous();
+}
+
+fn find_slice<T>(haystack: &[T], needle: &[T]) -> Option<usize>
+	where for<'a> &'a [T]: PartialEq
+{
+	// https://stackoverflow.com/a/35907071/11536614
+	haystack.windows(needle.len()).position(|window| window == needle)
 }
 

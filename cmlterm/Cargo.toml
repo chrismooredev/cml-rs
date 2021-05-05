@@ -1,6 +1,6 @@
 [package]
 name = "cmlterm"
-version = "0.6.2"
+version = "0.6.3"
 authors = ["Chris Moore <35407569+csm123199@users.noreply.github.com>"]
 edition = "2018"
 homepage = "https://github.com/csm123199/cml-rs"
@@ -37,9 +37,6 @@ ascii = "1.0.0"
 crossterm = { version = "0.19.0", features = [ "event-stream" ] }
 smol_str = "0.1.17"
 colored = "2.0.0"
-
-# debug displays
-hex = "0.4.2"
 
 cml = { path = "../cml" }
 
