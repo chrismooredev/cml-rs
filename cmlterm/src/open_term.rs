@@ -133,17 +133,16 @@ impl SubCmdOpen {
 			use crate::term::frontend::types::{UserTerminal, ScriptedTerminal, RawTerminal};
 			use crate::term::Drivable;
 
-			let stream: Box<dyn Drivable> = if ! self.ssh {
+			let console_stream: Box<dyn Drivable> = if ! self.ssh {
 				use crate::term::backend::websocket::WsConsole;
 				Box::new(WsConsole::new(&ctx).await.unwrap().fuse())
 			} else {
 				use crate::term::backend::ssh::SshConsole;
-				Box::new(SshConsole::new(&ctx, &auth).await.unwrap().fuse())
+				Box::new(SshConsole::single(&ctx, &auth).await.unwrap().fuse())
 			};
 
-			//let stream: Box<dyn Drivable> = Box::new(SshConsole::new(&ctx, &auth).await.unwrap().fuse());
-			//let stream: Box<dyn Drivable> = Box::new(WsConsole::new(&ctx).await.unwrap().fuse());
-			let driver = ConsoleDriver::from_connection(ctx, stream);
+			
+			let driver = ConsoleDriver::from_connection(ctx, console_stream);
 			if self.raw {
 				let rt = RawTerminal::new(driver);
 				rt.run().await.expect("an error within the raw stdin-driven terminal program");

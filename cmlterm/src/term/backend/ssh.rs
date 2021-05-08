@@ -22,19 +22,12 @@ pub enum SshError {
 	Io(#[from] io::Error),
 }
 
-pub struct SshConsole {
-	_session: AsyncSession<TcpStream>,
-	channel: AsyncChannel<TcpStream>,
-
-	channel_send_cache: String,
-	channel_closed_recv: bool,
-	
-	// Flag enabling us to remove the initial 'Escape character' business - use EOF
-	initializing: bool,
-	init_buffer: Vec<u8>,
+pub struct SshConsoleManager {
+	session: AsyncSession<TcpStream>,
 }
-impl SshConsole {
-	pub async fn new(console: &ConsoleCtx, auth: &cml::rest::Authenticate) -> Result<SshConsole, io::Error> {
+
+impl SshConsoleManager {
+	pub async fn new(auth: &cml::rest::Authenticate) -> Result<SshConsoleManager, io::Error> {
 		async fn connect_host(host: &str) -> io::Result<Async::<TcpStream>> {
 			let addrs = tokio::net::lookup_host(host.to_string() + ":22").await?;
 			for addr in addrs {
@@ -48,15 +41,21 @@ impl SshConsole {
 		}
 
 		debug!("connecting to CML on port 22");
-		let stream = connect_host(console.node().host()).await?;
-		let mut sess = AsyncSession::new(stream, None).unwrap();
+		let stream = connect_host(&auth.host).await?;
+		let mut session = AsyncSession::new(stream, None).unwrap();
 		debug!("performing SSH handshake");
-		sess.handshake().await.unwrap();
+		session.handshake().await.unwrap();
 		debug!("authenticating");
-		sess.userauth_password(&auth.username, &auth.password).await.unwrap();
+		session.userauth_password(&auth.username, &auth.password).await.unwrap();
 
+		Ok(SshConsoleManager {
+			session,
+		})
+	}
+
+	pub async fn console(&self, console: &ConsoleCtx) -> Result<SshConsole, io::Error> {
 		debug!("opening channel");
-		let mut channel = sess.channel_session().await.unwrap();
+		let mut channel = self.session.channel_session().await.unwrap();
 		debug!("requesting pty");
 		channel.request_pty("", None, None).await.unwrap();
 		debug!("sending list command");
@@ -66,7 +65,6 @@ impl SshConsole {
 		debug!("done initializing");
 
 		Ok(SshConsole {
-			_session: sess,
 			channel,
 			channel_send_cache: String::new(),
 			channel_closed_recv: false,
@@ -74,6 +72,23 @@ impl SshConsole {
 			initializing: true,
 			init_buffer: Vec::new(),
 		})
+	}
+}
+
+pub struct SshConsole {
+	channel: AsyncChannel<TcpStream>,
+
+	channel_send_cache: String,
+	channel_closed_recv: bool,
+	
+	// Flag enabling us to remove the initial 'Escape character' business - use EOF
+	initializing: bool,
+	init_buffer: Vec<u8>,
+}
+impl SshConsole {
+	pub async fn single(console: &ConsoleCtx, auth: &cml::rest::Authenticate) -> Result<SshConsole, io::Error> {
+		let manager = SshConsoleManager::new(auth).await?;
+		manager.console(console).await
 	}
 }
 
