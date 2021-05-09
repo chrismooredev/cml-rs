@@ -2,9 +2,10 @@
 use std::time::Duration;
 
 use clap::Clap;
-use cml::rest_types::State;
 use crossterm::tty::IsTty;
-
+use merge_io::MergeIO;
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+use cml::rest_types::State;
 use cml::rest::Authenticate;
 use crate::terminal::{ConsoleCtx, ConsoleSearchError, NodeCtx};
 use crate::TerminalError;
@@ -133,6 +134,7 @@ impl SubCmdOpen {
 			use crate::term::frontend::types::{UserTerminal, ScriptedTerminal, RawTerminal};
 			use crate::term::Drivable;
 
+			// TODO: check for println in these drivers, and remove them
 			let console_stream: Box<dyn Drivable> = if ! self.ssh {
 				use crate::term::backend::websocket::WsConsole;
 				Box::new(WsConsole::new(&ctx).await.unwrap().fuse())
@@ -141,13 +143,20 @@ impl SubCmdOpen {
 				Box::new(SshConsole::single(&ctx, &auth).await.unwrap().fuse())
 			};
 
+			let user = MergeIO::new(
+				tokio::io::stdin().compat(),
+				tokio::io::stdout().compat_write()
+			);
 			
 			let driver = ConsoleDriver::from_connection(ctx, console_stream);
+
 			if self.raw {
 				let rt = RawTerminal::new(driver);
 				rt.run().await.expect("an error within the raw stdin-driven terminal program");
 			} else if std::io::stdin().is_tty() {
-				let ut = UserTerminal::new(driver);
+				// Note: uses the terminals 'raw' mode - it reads events, not data stream
+				// as such, it will read events directly from tty/stdin, instead of the provided reader
+				let ut = UserTerminal::new(driver, user).map_err(|e| anyhow::Error::new(e))?;
 				ut.run().await.expect("an error within the tty stdin-driven terminal program");
 			} else {
 				let st = ScriptedTerminal::new(driver);

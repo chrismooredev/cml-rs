@@ -3,7 +3,7 @@ use clap::Clap;
 use log::trace;
 
 use cmlterm::TerminalError;
-use cmlterm::expose::SubCmdExpose;
+//use cmlterm::expose::SubCmdExpose;
 use cmlterm::listing::SubCmdList;
 use cmlterm::open_term::SubCmdOpen;
 
@@ -22,7 +22,7 @@ struct Args {
 enum SubCmd {
 	List(SubCmdList),
 	Open(SubCmdOpen),
-	Expose(SubCmdExpose),
+	//Expose(SubCmdExpose),
 }
 
 async fn application() -> anyhow::Result<()> {
@@ -57,7 +57,7 @@ async fn application() -> anyhow::Result<()> {
 	match &args.subc.unwrap() {
 		SubCmd::List(list) => list.run(&auth).await?,
 		SubCmd::Open(open) => open.run(&auth).await?,
-		SubCmd::Expose(expose) => expose.run(&auth.host).await,
+		//SubCmd::Expose(expose) => expose.run(&auth.host).await,
 	}
 
 	Ok(())

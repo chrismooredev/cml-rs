@@ -5,7 +5,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use thiserror::Error;
 use futures::stream::FusedStream;
-use futures::{Sink, Stream};
+use futures::{ Sink, Stream};
 
 /// A stream/sink pair suitable for interfacing with a console line with.
 ///
@@ -16,6 +16,12 @@ pub trait Drivable: Debug + Unpin + FusedStream + Stream<Item = Result<Vec<u8>, 
 impl<T> Drivable for T where T: Debug + Unpin + FusedStream + Stream<Item = Result<Vec<u8>, BoxedDriverError>> + Sink<String, Error = BoxedDriverError> {}
 
 pub type BoxedDriverError = anyhow::Error;
+
+
+mod rw_meta;
+pub use rw_meta::{UserTUI, IndepIsTty};
+//#[cfg(unix)] pub use rw_meta::raw_fd::IndepAsRawFd;
+//#[cfg(windows)] pub use rw_meta::raw_handle::IndepAsRawHandle;
 
 pub mod backend;
 pub mod common;
