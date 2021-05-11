@@ -151,7 +151,7 @@ impl SubCmdOpen {
 			let driver = ConsoleDriver::from_connection(ctx, console_stream);
 
 			if self.raw {
-				let rt = RawTerminal::new(driver);
+				let rt = RawTerminal::new(driver, user);
 				rt.run().await.expect("an error within the raw stdin-driven terminal program");
 			} else if std::io::stdin().is_tty() {
 				// Note: uses the terminals 'raw' mode - it reads events, not data stream

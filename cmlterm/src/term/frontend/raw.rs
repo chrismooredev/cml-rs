@@ -1,17 +1,13 @@
 
-use std::str::Utf8Error;
-use std::thread::JoinHandle;
-use std::io::{Write, StdoutLock};
+use std::borrow::Cow;
 
 use anyhow::Context;
 use thiserror::Error;
 use futures::{SinkExt, StreamExt};
-use futures::stream::SplitStream;
-use futures::channel::mpsc::{SendError, Sender};
-use log::{debug, error};
+use log::{debug, error, warn};
 use crossterm::terminal;
 
-use crate::term::BoxedDriverError;
+use crate::term::{BoxedDriverError, UserTUI};
 use crate::term::common::{ConsoleDriver, ConsoleUpdate};
 
 /// A raw terminal
@@ -20,136 +16,81 @@ use crate::term::common::{ConsoleDriver, ConsoleUpdate};
 ///
 /// Note that since we do not process terminal input ourselves (only forward),
 /// a program will have to close stdin deliberately, notably, a user cannot send EOF using keystrokes
-pub struct RawTerminal {
+pub struct RawTerminal<UTUI: UserTUI> {
 	driver: ConsoleDriver,
-	meta: UserMeta,
-}
-
-/// Contains the runtime information needed to drive the terminal state/IO
-struct UserMeta;
-impl UserMeta {
-	fn handle_update(&self, stdout: &mut StdoutLock, update: ConsoleUpdate) -> Result<(), RawError> {
-		let ConsoleUpdate { last_chunk, .. } = update;
-		let data = last_chunk.as_slice();
-		
-		stdout.write_all(data)?;
-		stdout.flush()?;
-
-		Ok(())
-	}
-
-	/// Responsible for:
-	/// * attempting to initialize the console
-	/// * sending stdin keystrokes to the console
-	/// * sending a close message on stdin close
-	fn drive_input(&self, mut srv_send: Sender<String>) -> Result<JoinHandle<Result<(), RawError>>, std::io::Error> {
-		Ok(std::thread::Builder::new()
-			.name("read_stdin".to_owned())
-			.spawn(move || futures::executor::block_on(async {
-				use std::io::Read;
-				let mut buf = Vec::with_capacity(1024);
-				buf.resize(1024, 0);
-				let mut sin = std::io::stdin();
-
-				loop {
-					let res_filled_bytes = sin.read(&mut buf);
-					let filled_bytes = match res_filled_bytes {
-						Ok(0) => break,
-						Ok(n) => n,
-						Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-						Err(e) => return Err(e.into()),
-					};
-					srv_send.send(std::str::from_utf8(&buf[..filled_bytes])?.to_owned()).await?;
-				}
-
-				debug!("stdin closed");
-				terminal::disable_raw_mode().unwrap();
-				srv_send.close_channel();
-				Result::<(), RawError>::Ok(())
-			}))?)
-	}
-
-	/// Responsible for:
-	/// * Processing updates from the console driver
-	async fn drive_output(&self, mut srv_recv: SplitStream<ConsoleDriver>, mut stdout_lock: StdoutLock<'_>) -> Result<(), RawError> {
-		
-		while let Some(res_update) = srv_recv.next().await {
-			let update = res_update?;
-			self.handle_update(&mut stdout_lock, update)?;
-		}
-
-		debug!("drive_output done");
-
-		Ok(())
-	}
+	tui: UTUI,
 }
 
 #[derive(Debug, Error)]
 pub enum RawError {
-	#[error("A terminal IO error occured.")]
+	#[error("An unrecoverable IO has error occured.")]
 	Io(#[from] std::io::Error),
 	#[error("A console connection error occured.")]
 	Connection(#[from] BoxedDriverError),
-	#[error("An error occured writing terminal title.")]
-	Terminal(#[from] crossterm::ErrorKind),
-	#[error("Send buffer has overfilled")]
-	Buffer(#[from] SendError),
-	#[error("Input was not UTF-8. This is unsupported, and a fatal error.")]
-	Encoding(#[from] Utf8Error),
 }
 
-impl RawTerminal {
-	pub fn new(driver: ConsoleDriver) -> RawTerminal {
+impl<UTUI: UserTUI> RawTerminal<UTUI> {
+	pub fn new(driver: ConsoleDriver, tui: UTUI) -> RawTerminal<UTUI> {
 		RawTerminal {
 			driver,
-			meta: UserMeta,
+			tui,
 		}
 	}
 
 	/// Runs drives the console based off the current process' stdin and stdout.
 	/// Recieves events from stdin in a loop, and passes it to the console.
 	/// Data from the console is sent back to stdout, setting the terminal's title as appropriate.
-	pub async fn run(self) -> anyhow::Result<()> {
-		let RawTerminal { driver, meta } = self;
-		let (to_console, console_queue) = futures::channel::mpsc::channel::<String>(16);
+	pub async fn run(self) -> Result<(), RawError> {
+		use futures::{AsyncReadExt, AsyncWriteExt};
 
+		let RawTerminal { driver, tui } = self;
 		// push stdin into it
 		// write output to stdout, with some buffering
-		let stdio = std::io::stdout();
-		let stdout_lock = stdio.lock();
+		let mut tui = tui;
+		let mut driver = driver.fuse();
+
+		// tools will 'fake' using a tty reader, so check our output
+		if tui.is_tty_writer() {
+			eprintln!("Note: Since raw mode uses a raw terminal, the process must be stopped externally if using interactively");
+		}
 
 		terminal::enable_raw_mode().with_context(|| "enabling terminal's raw mode")?;
+		let mut userbuf = [0u8; 2048];
+		let mut userdone = false;
 
-		let (srv_send_raw, srv_recv) = driver.split::<String>();
+		loop {
+			tokio::select! {
+				userchunk_res = tui.read(&mut userbuf), if !userdone => {
+					match userchunk_res? {
+						0 => {
+							debug!("tui input sent EOF");
+							userdone = true;
+							driver.close().await?;
+						},
+						n @ _ => {
+							let data = &userbuf[..n];
+							let as_str = String::from_utf8_lossy(data);
+							if let Cow::Owned(_) = as_str {
+								warn!("input data was not UTF8. Sending lossy UTF8 to server.");
+							}
+							driver.send(as_str.to_string()).await?;
+						},
+					}
+				},
+				Some(termchunk_res) = driver.next() => {
+					let ConsoleUpdate { last_chunk, .. } = termchunk_res?;
+					let data = last_chunk.as_slice();
+					
+					tui.write_all(data).await?;
+					tui.flush().await?;
+				},
 
-		let stdin_handler = meta.drive_input(to_console)?;
-		let srv_recv = meta.drive_output(srv_recv, stdout_lock);
-		let to_srv_driver = async {
-			// is there a better alternative to this?
-			// (short-circuiting on error stream forwarder)
-			// tried to find something like futures::stream::StreamExt::try_forward
-
-			let mut to_srv = console_queue;
-			let mut srv_send_raw = srv_send_raw;
-
-			while let Some(msg) = to_srv.next().await {
-				srv_send_raw.send(msg).await?;
+				else => {
+					debug!("tokio input loop finished, breaking");
+					break
+				},
 			}
-
-			srv_send_raw.close().await?;
-			debug!("to_srv_driver done, srv_send_raw closed");
-			Result::<_, BoxedDriverError>::Ok(())
-		};
-
-		debug!("waiting for raw futures to complete");
-
-		let (recv, driver): (Result<(), RawError>, Result<(), BoxedDriverError>) = futures::future::join(srv_recv, to_srv_driver).await;
-		recv?; driver?;
-
-		debug!("raw futures have finished. joining stdin...");
-		let () = stdin_handler.join().unwrap_or_else(|e| std::panic::resume_unwind(e))?;
-
-		debug!("raw futures have finished.");
+		}
 
 		Ok(())
 	}

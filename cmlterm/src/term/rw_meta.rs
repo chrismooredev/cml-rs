@@ -1,13 +1,7 @@
 
-use std::cell::{BorrowError, BorrowMutError, Ref, RefCell};
-use std::collections::VecDeque;
-use std::fmt::Debug;
-use std::sync::Arc;
 use crossterm::tty::IsTty;
 use merge_io::MergeIO;
-use thiserror::Error;
-use futures::stream::FusedStream;
-use futures::{AsyncRead as FAsyncRead, AsyncWrite as FAsyncWrite, Sink, Stream};
+use futures::{AsyncRead as FAsyncRead, AsyncWrite as FAsyncWrite};
 /*
 mod plat {
 	#[cfg(unix)] pub use std::os::unix::io::{AsRawFd, RawFd};
