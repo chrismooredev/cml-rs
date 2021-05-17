@@ -4,8 +4,3 @@ members = [
 	"cmlrest",
 	"cmlterm"
 ]
-
-
-# dependency patching until upstream tokio util is pushed out
-[patch.crates-io]
-tokio = { git = "https://github.com/tokio-rs/tokio" }
