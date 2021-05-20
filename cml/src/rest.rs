@@ -22,7 +22,7 @@ pub enum CmlError {
 }
 
 #[derive(Debug, Error)]
-#[error("There was an error invoking the CML REST API for {}", endpoint)]
+#[error("There was an error invoking the CML REST API for {} ({:?})", endpoint, error_type)]
 pub struct ApiError {
 	endpoint: String,
 	error_type: ApiErrorType,
