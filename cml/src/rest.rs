@@ -162,25 +162,15 @@ pub mod raw {
 
 	/// Sets up an authenticated GET request to the CML rest server (version 0).
 	#[allow(unused)]
-	pub fn get_v0<D: std::fmt::Display>(user: &CmlUser, endpoint: D) -> reqwest::RequestBuilder {
-		let as_string = endpoint.to_string();
-		let mut as_str: &str = &as_string;
-		if as_str.starts_with('/') {
-			as_str = &as_str[1..];
-		}
-		user.get_v0(as_str)
+	pub fn get_v0<D: ToString>(user: &CmlUser, endpoint: D) -> reqwest::RequestBuilder {
+		user.get_v0(endpoint)
 	}
 
 	/// Sets up an authenticated PUT request to the CML rest server (version 0).
 	///
 	/// Data must be passed into the resulting object before the request is sent.
 	#[allow(unused)]
-	pub fn put_v0<D: std::fmt::Display>(user: &CmlUser, endpoint: D) -> reqwest::RequestBuilder {
-		let as_string = endpoint.to_string();
-		let mut as_str: &str = &as_string;
-		if as_str.starts_with('/') {
-			as_str = &as_str[1..];
-		}
+	pub fn put_v0<D: ToString>(user: &CmlUser, endpoint: D) -> reqwest::RequestBuilder {
 		user.put_v0(endpoint)
 	}
 }
@@ -188,11 +178,17 @@ pub mod raw {
 // TODO: impl a from_format that special cases "https://{}/{}?{}#{}", etc without allocating
 
 impl CmlUser {
-	fn get_v0<D: std::fmt::Display>(&self, endpoint: D) -> reqwest::RequestBuilder {
-		self.client.get(format!("https://{}/api/v0/{}", self.host, endpoint).as_str())
+	fn get_v0<E: ToString>(&self, endpoint: E) -> reqwest::RequestBuilder {
+		let s = endpoint.to_string();
+		let mut as_str: &str = &s;
+		if as_str.starts_with('/') { as_str = &as_str[1..]; }
+		self.client.get(format!("https://{}/api/v0/{}", self.host, as_str).as_str())
 	}
-	fn put_v0<D: std::fmt::Display>(&self, endpoint: D) -> reqwest::RequestBuilder {
-		self.client.put(format!("https://{}/api/v0/{}", self.host, endpoint).as_str())
+	fn put_v0<E: ToString>(&self, endpoint: E) -> reqwest::RequestBuilder {
+		let s = endpoint.to_string();
+		let mut as_str: &str = &s;
+		if as_str.starts_with('/') { as_str = &as_str[1..]; }
+		self.client.put(format!("https://{}/api/v0/{}", self.host, as_str).as_str())
 	}
 
 	pub fn host(&self) -> &str {
